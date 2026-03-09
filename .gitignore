@@ -59,3 +59,5 @@ desktop.ini
 /tmp_test_images/
 # PyInstaller 生成的钩子缓存
 hook-*.py
+
+.shrimp/

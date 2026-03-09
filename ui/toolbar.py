@@ -77,9 +77,35 @@ class ToolBar(QWidget):
         btn_crop = self._make_tool_btn("✂\n裁剪", CanvasTool.CROP)
         layout.addWidget(btn_crop)
 
-        # 抠图
+        # 抠图（第一步：框选工具）
         btn_grabcut = self._make_tool_btn("✦\n抠图", CanvasTool.GRABCUT)
+        btn_grabcut.setToolTip("第①步：点击激活，在图片上拖拽框选主体")
         layout.addWidget(btn_grabcut)
+
+        # 抠图（第二步：执行按钮）
+        self._btn_run_grabcut = QPushButton("▶\n执行")
+        self._btn_run_grabcut.setFixedHeight(42)
+        self._btn_run_grabcut.setToolTip("第②步：框选完成后点击，开始抠图")
+        self._btn_run_grabcut.setEnabled(False)
+        self._btn_run_grabcut.setStyleSheet("""
+            QPushButton {
+                background: #2b4a1e;
+                color: #aaa;
+                border: 1px solid #4a6e35;
+                border-radius: 6px;
+                font-size: 10px;
+                padding: 4px 2px;
+            }
+            QPushButton:enabled {
+                background: #2e7d32;
+                color: #fff;
+                border-color: #4caf50;
+            }
+            QPushButton:enabled:hover { background: #388e3c; }
+            QPushButton:enabled:pressed { background: #1b5e20; }
+        """)
+        self._btn_run_grabcut.clicked.connect(self.grabcut_clicked)
+        layout.addWidget(self._btn_run_grabcut)
 
         # 分隔线
         line = QFrame()
@@ -151,3 +177,12 @@ class ToolBar(QWidget):
         self._current_tool = tool
         for t, btn in self._tool_buttons.items():
             btn.setChecked(t == tool)
+        # 切离抠图工具时，重置执行按钮
+        if tool != CanvasTool.GRABCUT:
+            self._btn_run_grabcut.setEnabled(False)
+
+    def set_grabcut_ready(self, has_selection: bool) -> None:
+        """有选区时点亮执行按钮，无选区时置灰。"""
+        self._btn_run_grabcut.setEnabled(
+            has_selection and self._current_tool == CanvasTool.GRABCUT
+        )

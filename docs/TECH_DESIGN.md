@@ -105,47 +105,97 @@ class ImageModel:
 
 所有基础图像操作，均为纯函数，输入输出均为 `np.ndarray`。
 
-| 方法                                 | 说明                                        |
-|------------------------------------|---------------------------------------------|
-| `crop(img, x1, y1, x2, y2)`        | 裁剪指定矩形区域，返回新数组                  |
-| `rotate_90cw(img)`                 | 顺时针旋转 90°                              |
-| `rotate_90ccw(img)`                | 逆时针旋转 90°                              |
-| `rotate_180(img)`                  | 旋转 180°                                   |
-| `rotate_arbitrary(img, angle)`     | 任意角度旋转（带画布扩展，保留完整内容）       |
-| `delete_selection(img, mask)`      | 将 mask 区域 alpha 设为 0（透明删除）         |
-| `read_image(path)`                 | 读取图片，返回 BGRA ndarray，保持原始尺寸     |
-| `write_image(img, path, quality)`  | 写入图片，PNG 无损，JPG 按 quality 参数      |
+| 方法                                        | 说明                                              |
+|-------------------------------------------|--------------------------------------------------|
+| `crop(img, x1, y1, x2, y2)`               | 裁剪指定矩形区域，返回新数组                        |
+| `rotate_90cw(img)`                        | 顺时针旋转 90°（无损）                             |
+| `rotate_90ccw(img)`                       | 逆时针旋转 90°（无损）                             |
+| `rotate_180(img)`                         | 旋转 180°（无损）                                  |
+| `rotate_arbitrary(img, angle)`            | 任意角度旋转（带画布扩展，LANCZOS4 插值）           |
+| `delete_selection(img, x1, y1, x2, y2)`  | 将矩形区域 alpha 设为 0（透明删除）                 |
+| `trim_to_content(img, threshold)`         | 裁去四周透明像素，保留主体内容最小边界框（F-08）      |
+| `resize_to_size(img, target_w, target_h, keep_aspect)` | 重采样到指定尺寸，可选锁比（F-09）  |
+| `read_image(path)`                        | 读取图片，返回 BGRA ndarray，保持原始尺寸           |
+| `write_image(img, path, quality)`         | 写入图片，PNG 无损，JPG 按 quality 参数            |
 
 **旋转无损实现**：
 - 90°/180°/270° 旋转使用 `cv2.rotate()`，无插值，像素1:1对应，完全无损
 - 任意角度旋转使用 `cv2.warpAffine()`，`flags=cv2.INTER_LANCZOS4`（高质量插值）
 
-### 3.3 GrabCutProcessor（抠图）
+**缩放插值策略**：
 
+| 操作 | 插值算法 | 原因 |
+|------|---------|------|
+| 缩小图片 | `cv2.INTER_LANCZOS4` | Sinc 滤波，防摩尔纹，锐度好 |
+| 放大图片 | `cv2.INTER_CUBIC` | 双三次，边缘平滑 |
+**trim_to_content 实现思路**：
+```
+原图 BGRA (H×W×4)
+→ 取 alpha 通道：alpha = img[:, :, 3]
+→ 找所有 alpha > threshold 的行/列下标
+→ 若无不透明像素：返回原图（或抛 ValueError）
+→ bbox = (min_col, min_row, max_col+1, max_row+1)
+→ return img[min_row:max_row+1, min_col:max_col+1].copy()
+```
+
+核心 NumPy 实现（O(W×H)，纯 CPU，通常 < 10ms）：
 ```python
-class GrabCutProcessor:
-    def run(self, img: np.ndarray, rect: tuple) -> np.ndarray:
-        """
-        输入：原始 BGR 图像 + 用户框选的矩形 (x, y, w, h)
-        输出：BGRA 图像，背景区域 alpha=0（透明）
-        """
+mask = img[:, :, 3] > threshold          # bool (H, W)
+rows = np.any(mask, axis=1)              # 哪些行有不透明像素
+cols = np.any(mask, axis=0)              # 哪些列有不透明像素
+r0, r1 = np.where(rows)[0][[0, -1]]
+c0, c1 = np.where(cols)[0][[0, -1]]
+return img[r0:r1+1, c0:c1+1].copy()
 ```
 
-**GrabCut 执行流程**：
+### 3.3 GrabCutWorker（抠图）
+
+#### 算法背景
+
+主流图像软件的抠图技术栈（由简到精）：
+
+| 层次 | 代表工具 | 核心算法 | 适用场景 |
+|------|---------|---------|---------|
+| 颜色选择 | PS 魔棒 | 颜色阈值 + Flood Fill | 纯色背景 |
+| 半自动图割 | GIMP 前景选择 | **GrabCut**（GMM + 图割） | 简单主体 |
+| 专业边缘 | PS "选择并遮住" | **Alpha Matting**（KNN/贝叶斯）| 头发/毛发 |
+| AI 在线 | remove.bg | U-Net / MODNet 深度学习 | 通用高质量 |
+| AI 本地 | rembg（ONNX） | IS-Net / U2-Net | 离线通用 |
+
+**Alpha Matting 核心原理**：边缘像素满足 `I = α·F + (1-α)·B`，
+通过对前景色 F 和背景色 B 的采样反解出连续的 α 值（0~1），
+实现逐像素软透明，而不是粗暴的二值 mask。
+
+**EasyPicture v1.0 使用 GrabCut + 后处理**，v1.3 规划引入本地 AI 模型（rembg/ONNX）。
+
+#### 执行流程（含后处理）
 
 ```
-1. 将输入图转为 BGR（去掉 alpha）
-2. 初始化 mask = np.zeros，bgdModel, fgdModel
-3. cv2.grabCut(img, mask, rect, bgdModel, fgdModel, iterCount=5, mode=cv2.GC_INIT_WITH_RECT)
-4. 生成二值前景 mask：(mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD)
-5. 在原图上添加 alpha 通道，mask=0 的区域设 alpha=0
-6. 返回 BGRA 图像
+1.  BGR 转换（GrabCut 不支持 BGRA）
+2.  大图缩放（> 1200px → 缩小加速，保留 scale 比例）
+3.  cv2.grabCut(rect 模式，iterCount=5)
+         ↓
+4.  二值前景 mask：GC_FGD | GC_PR_FGD
+         ↓ 后处理（提升边缘质量）
+5.  形态学闭运算（MORPH_CLOSE）—— 填补前景内部空洞
+6.  形态学开运算（MORPH_OPEN）  —— 去除边缘细碎噪点
+7.  连通域分析（connectedComponents）—— 只保留最大连通域 + 面积 ≥ 20% 的区域
+8.  双线性插值放大 mask 回原始尺寸（INTER_LINEAR，比 INTER_NEAREST 边缘更平滑）
+9.  边缘羽化（Gaussian blur + 核心区锁定 255）—— 生成软 alpha 过渡
+10. 合并到 BGRA：result[:,:,3] = alpha_mask
 ```
 
-**性能优化**：
-- 大图（> 2000px）先缩放到 1500px 执行 GrabCut，结果 mask 再放大回原始尺寸
-- 在子线程（`QThread`）中执行，避免 UI 卡顿
-- 执行期间显示进度对话框
+**各后处理步骤效果对比**：
+
+| 步骤 | 解决的问题 |
+|------|----------|
+| 闭运算 | 前景内部出现小黑洞（如衣服纹理被识别为背景）|
+| 开运算 | 前景边缘周围出现孤立噪点像素 |
+| 连通域过滤 | 远离主体的孤立碎块（如背景中的阴影碎片被识别为前景）|
+| INTER_LINEAR 放大 | mask 边缘出现阶梯状锯齿（旧实现用 INTER_NEAREST）|
+| 高斯羽化 | 前景/背景交界处 alpha 硬切，边缘不自然 |
+
+**线程**：在 `QThread` 子线程执行，主线程通过 `progress` 信号更新进度条。
 
 ### 3.4 HistoryManager（撤销/重做）
 

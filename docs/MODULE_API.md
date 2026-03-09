@@ -173,6 +173,55 @@ class ImageProcessor:
         """
 
     @staticmethod
+    def trim_to_content(img: np.ndarray,
+                        threshold: int = 0) -> np.ndarray:
+        """
+        裁去图片四周多余的透明像素，保留主体内容的最小边界框（F-08）。
+
+        等同于 Photoshop「图像 → 裁切 → 基于透明像素」。
+
+        算法：
+            1. 取 alpha 通道，找所有 alpha > threshold 的像素
+            2. 计算其行列最小/最大下标（bounding box）
+            3. 裁切并返回新数组
+
+        Args:
+            img:       BGRA 图像（必须含 alpha 通道）
+            threshold: 判定"透明"的 alpha 阈值（0-255），默认 0（即 alpha=0 才算透明）
+
+        Returns:
+            裁切后的新 BGRA 数组，尺寸 ≤ 原图
+
+        Raises:
+            ValueError: 图片全透明，无内容可保留
+        """
+
+    @staticmethod
+    def resize_to_size(img: np.ndarray,
+                       target_w: int,
+                       target_h: int,
+                       keep_aspect: bool = True) -> np.ndarray:
+        """
+        将图片重采样到指定尺寸（F-09）。
+
+        - keep_aspect=True：等比缩放，以较小约束边生效；若只约束单边，另一边传 0。
+        - keep_aspect=False：拉伸到精确 target_w × target_h。
+        - 缩小时使用 LANCZOS4，放大时使用 CUBIC。
+
+        Args:
+            img:         BGRA 图像
+            target_w:    目标宽度（像素）；0 = 按高度自动计算（keep_aspect=True 有效）
+            target_h:    目标高度（像素）；0 = 按宽度自动计算（keep_aspect=True 有效）
+            keep_aspect: 是否保持宽高比，默认 True
+
+        Returns:
+            重采样后的新 BGRA 数组
+
+        Raises:
+            ValueError: target_w 和 target_h 同时为 0，或值为负
+        """
+
+    @staticmethod
     def alpha_composite_white(img: np.ndarray) -> np.ndarray:
         """
         将 BGRA 图像合并到白色背景，返回 BGR 图像。
@@ -184,41 +233,59 @@ class ImageProcessor:
 
 ## 四、core/grabcut.py
 
-### `class GrabCutProcessor`
+### `class GrabCutWorker`
 
 ```python
-class GrabCutProcessor(QObject):
+class GrabCutWorker(QObject):
     """
-    在 QThread 中执行 GrabCut 抠图，避免阻塞主线程。
-    通过信号返回结果。
+    在 QThread 中执行 GrabCut 抠图 + 后处理流水线，避免阻塞主线程。
+
+    后处理步骤（按顺序）：
+      1. 形态学闭运算 — 填补前景内部空洞
+      2. 形态学开运算 — 去除边缘碎噪点
+      3. 连通域过滤   — 只保留最大连通域及面积 ≥ 20% 的区域
+      4. INTER_LINEAR 放大 mask — 消除锯齿
+      5. 高斯边缘羽化 — 生成软 alpha 过渡，核心区锁定 255
     """
 
-    # 信号
-    finished = Signal(np.ndarray)   # 抠图完成，返回 BGRA 结果图像
-    failed = Signal(str)            # 抠图失败，返回错误信息
-    progress = Signal(int)          # 进度（0-100）
+    finished = Signal(object)   # np.ndarray BGRA — 抠图完成
+    failed   = Signal(str)      # str — 错误信息
+    progress = Signal(int)      # int 0-100 — 进度
 
-    def run(self, img: np.ndarray,
-            rect: tuple[int, int, int, int],
-            iter_count: int = 5) -> None:
+    def __init__(self, img: np.ndarray,
+                 rect: tuple[int, int, int, int],
+                 iter_count: int = 5) -> None:
         """
-        启动 GrabCut 处理（在调用线程执行，通常配合 QThread 使用）。
-        
         Args:
-            img:        BGRA 原始图像
+            img:        BGRA 原始图像（深拷贝，不影响原图）
             rect:       用户框选矩形 (x, y, width, height)，图像坐标系
-            iter_count: GrabCut 迭代次数，默认 5（越高越精确但越慢）
-        
-        处理完成后发出 finished(result) 信号。
+            iter_count: GrabCut 迭代次数，默认 5
         """
 
-    @staticmethod
-    def _preprocess(img: np.ndarray, max_size: int = 1500) -> tuple:
+    def run(self) -> None:
         """
-        大图预处理：缩小到 max_size 以内以加速处理。
-        返回 (缩小后的 BGR 图, 缩放比例)。
-        内部方法，不对外暴露。
+        执行完整抠图流水线（由 QThread.started 信号触发）。
+        完成后发出 finished(bgra_result)，失败发出 failed(err_msg)。
         """
+```
+
+**辅助函数**：
+
+```python
+def _keep_largest_component(mask: np.ndarray) -> np.ndarray:
+    """
+    连通域分析，过滤孤立碎块。
+    保留面积最大的区域 + 面积 ≥ 最大区域 20% 的其他区域。
+    """
+
+def _feather_edges(mask: np.ndarray, h: int, w: int) -> np.ndarray:
+    """
+    边缘羽化：对前景 mask 边界做高斯软化。
+    - 核心区（远离边界）: alpha = 255
+    - 边缘过渡区: alpha = Gaussian blur 值（0~255 连续）
+    - 背景区: alpha = 0
+    羽化半径 = max(3, min(15, min(h,w) * 0.5%))
+    """
 ```
 
 **使用示例**：
@@ -226,12 +293,13 @@ class GrabCutProcessor(QObject):
 ```python
 # 在 AppController 中
 thread = QThread()
-worker = GrabCutProcessor()
+worker = GrabCutWorker(img=self.model.image.copy(), rect=(x, y, w, h))
 worker.moveToThread(thread)
 
-worker.finished.connect(self.on_grabcut_done)
-worker.failed.connect(self.on_grabcut_failed)
-thread.started.connect(lambda: worker.run(img, rect))
+worker.finished.connect(self._on_grabcut_done)
+worker.failed.connect(self._on_grabcut_failed)
+worker.progress.connect(self._progress_dialog.setValue)
+thread.started.connect(worker.run)
 thread.start()
 ```
 

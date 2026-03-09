@@ -305,14 +305,16 @@ class AppController:
     # ------------------------------------------------------------------
 
     def _on_selection_changed(self, x1: int, y1: int, x2: int, y2: int) -> None:
-        """Canvas 选区变化 → 同步 model 和 CropPanel。"""
+        """Canvas 选区变化 → 同步 model、CropPanel、执行按钮状态。"""
         self.model.set_selection(x1, y1, x2, y2)
         cp = self.window.crop_panel
         if cp.isVisible():
             cp.set_selection(x1, y1, x2, y2)
+        self.window.toolbar.set_grabcut_ready(True)
 
     def _on_selection_cleared(self) -> None:
         self.model.clear_selection()
+        self.window.toolbar.set_grabcut_ready(False)
 
     def _on_crop_panel_values_changed(self, x1: int, y1: int,
                                        x2: int, y2: int) -> None:

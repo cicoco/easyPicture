@@ -27,7 +27,8 @@ Phase 6: 区域选择与裁剪
 Phase 7: 删除选区内容
 Phase 8: GrabCut 抠图
 Phase 9: 撤销/重做
-Phase 10: 体验打磨与打包
+Phase 10: 符合画布 & 缩放到指定尺寸
+Phase 11: 体验打磨与打包
 ```
 
 ---
@@ -801,6 +802,204 @@ def _draw_checkerboard(self, painter: QPainter, rect: QRect):
 
 ---
 
+## Phase 10：符合画布 & 缩放到指定尺寸
+
+### Step 10.1 — ImageProcessor 新增两个纯函数
+
+**文件**：`core/image_processor.py`
+
+**实现要求**：
+
+```python
+@staticmethod
+def trim_to_content(img: np.ndarray, threshold: int = 0) -> np.ndarray:
+    """
+    裁去图片四周多余的透明像素，保留主体内容的最小边界框（F-08）。
+    等同于 Photoshop「图像 → 裁切 → 基于透明像素」。
+    """
+    alpha = img[:, :, 3]
+    mask = alpha > threshold
+    if not mask.any():
+        raise ValueError("图片全透明，无内容可保留")
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    r0, r1 = np.where(rows)[0][[0, -1]]
+    c0, c1 = np.where(cols)[0][[0, -1]]
+    return img[r0:r1 + 1, c0:c1 + 1].copy()
+
+@staticmethod
+def resize_to_size(img: np.ndarray,
+                   target_w: int, target_h: int,
+                   keep_aspect: bool = True) -> np.ndarray:
+    """重采样图片到指定尺寸；keep_aspect=True 时自动等比，单边传 0 表示自动。"""
+    h, w = img.shape[:2]
+    if target_w < 0 or target_h < 0:
+        raise ValueError("目标尺寸不能为负数")
+    if target_w == 0 and target_h == 0:
+        raise ValueError("target_w 和 target_h 不能同时为 0")
+    if keep_aspect:
+        if target_w == 0:
+            scale = target_h / h
+        elif target_h == 0:
+            scale = target_w / w
+        else:
+            scale = min(target_w / w, target_h / h)
+        new_w, new_h = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    else:
+        new_w = target_w if target_w > 0 else w
+        new_h = target_h if target_h > 0 else h
+    scale_factor = min(new_w / w, new_h / h)
+    interp = cv2.INTER_LANCZOS4 if scale_factor < 1 else cv2.INTER_CUBIC
+    return cv2.resize(img, (new_w, new_h), interpolation=interp)
+```
+
+**验证**：
+```python
+import numpy as np
+from core.image_processor import ImageProcessor as P
+
+# trim_to_content: 构造一张中间有内容、四周透明的图
+img = np.zeros((100, 100, 4), dtype=np.uint8)
+img[20:80, 30:70] = [255, 0, 0, 255]   # 蓝色不透明方块
+result = P.trim_to_content(img)
+assert result.shape == (60, 40, 4), "应裁为 60×40"
+assert result[0, 0, 3] == 255, "裁后左上角应为不透明"
+
+# 全透明图应抛异常
+blank = np.zeros((100, 100, 4), dtype=np.uint8)
+try:
+    P.trim_to_content(blank)
+    assert False, "应抛出 ValueError"
+except ValueError:
+    pass
+
+# resize_to_size: keep_aspect=True，等比缩放
+img2 = np.random.randint(0, 256, (600, 800, 4), dtype=np.uint8)
+r = P.resize_to_size(img2, 400, 400, keep_aspect=True)
+# 原图 800×600，等比 min(400/800, 400/600)=0.5，结果 400×300
+assert r.shape == (300, 400, 4), "等比缩放结果应为 300×400"
+
+# resize_to_size: keep_aspect=False，强制拉伸
+r2 = P.resize_to_size(img2, 200, 200, keep_aspect=False)
+assert r2.shape == (200, 200, 4), "强制缩放结果应为 200×200"
+```
+
+---
+
+### Step 10.2 — 「符合画布」无需对话框，直接执行
+
+符合画布（Trim）是一键操作，**不需要弹窗**，无需用户输入任何参数。  
+Controller 直接调用 `trim_to_content` 并更新 Model / Canvas。
+
+---
+
+### Step 10.3 — 添加「缩放到指定尺寸」对话框
+
+**文件**：`ui/resize_dialog.py`（新建）
+
+**实现要求**：
+- `QDialog`，含「宽度」`QSpinBox`、「高度」`QSpinBox`、「锁定宽高比」`QCheckBox`、「百分比」`QDoubleSpinBox`
+- 宽高比锁定时，修改宽度自动更新高度（反之亦然）
+- 百分比字段与像素字段联动（修改百分比 → 自动计算像素）
+- 显示原始尺寸
+- `get_values() -> dict | None`，返回 `{'w': int, 'h': int, 'keep_aspect': bool}`
+
+**UI 布局草图**：
+```
+┌─ 缩放图片 ──────────────────────┐
+│  原始尺寸：1920 × 1080          │
+│                                 │
+│  宽度：[ 1920 ] 像素  [  100 ]% │
+│  🔗 锁定宽高比  ☑               │
+│  高度：[ 1080 ] 像素  [  100 ]% │
+│                                 │
+│         [ 取消 ]  [ 确定 ]      │
+└─────────────────────────────────┘
+```
+
+---
+
+### Step 10.4 — Controller 连接新功能
+
+**文件**：`controller/app_controller.py`
+
+**新增方法**：
+```python
+def do_trim_to_content(self) -> None:
+    """一键裁去四周透明像素，保留主体，无需弹窗（F-08）。"""
+    if self.model.image is None:
+        return
+    try:
+        new_img = ImageProcessor.trim_to_content(self.model.image)
+    except ValueError:
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(self.window, "符合画布", "图片中无透明区域，无需裁切。")
+        return
+    if new_img.shape == self.model.image.shape:
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(self.window, "符合画布", "图片四周无透明像素，无需裁切。")
+        return
+    old_w, old_h = self.model.width, self.model.height
+    self.history.push(self.model.image.copy())
+    self.model.update_image(new_img)
+    self.window.canvas.set_image(new_img)
+    self.window.status_bar.showMessage(
+        f"符合画布：{old_w}×{old_h} → {new_img.shape[1]}×{new_img.shape[0]}"
+    )
+
+def do_resize_to_size(self) -> None:
+    """弹出「缩放图片」对话框，执行并推入历史。"""
+    if self.model.image is None:
+        return
+    from ui.resize_dialog import ResizeDialog
+    dlg = ResizeDialog(self.model.width, self.model.height, self.window)
+    result = dlg.get_values()
+    if result is None:
+        return
+    new_img = ImageProcessor.resize_to_size(
+        self.model.image, result['w'], result['h'], result['keep_aspect'])
+    self.history.push(self.model.image.copy())
+    self.model.update_image(new_img)
+    self.window.canvas.set_image(new_img)
+    self.window.status_bar.showMessage(
+        f"缩放完成：{new_img.shape[1]}×{new_img.shape[0]}")
+```
+
+---
+
+### Step 10.5 — 菜单栏添加「图像」菜单
+
+**文件**：`ui/main_window.py`
+
+**新增菜单项**：
+```python
+image_menu = menu_bar.addMenu("图像(&I)")
+
+action_fit = QAction("符合画布(&F)", self)
+action_fit.setStatusTip("裁去四周透明像素，保留主体内容的最小边界框")
+image_menu.addAction(action_fit)
+
+action_resize = QAction("缩放图片(&R)...", self)
+action_resize.setShortcut("Ctrl+Alt+R")
+action_resize.setStatusTip("将图片重采样到指定像素尺寸")
+image_menu.addAction(action_resize)
+```
+
+在 `AppController._connect_signals()` 中连接：
+```python
+self.window.action_fit.triggered.connect(self.do_trim_to_content)
+self.window.action_resize.triggered.connect(self.do_resize_to_size)
+```
+
+**验证**：
+- 抠图完成后（背景变透明），执行「符合画布」，图片尺寸缩小至主体边界，状态栏显示新旧尺寸
+- 整张图无透明像素时，执行「符合画布」，弹出提示"无需裁切"，图片不变
+- 「符合画布」可 Ctrl+Z 撤销
+- 打开一张图，执行「缩放图片 → 宽 400，锁定宽高比」，高度自动变为 300，图片正确缩放
+- 「缩放图片」可 Ctrl+Z 撤销
+
+---
+
 ## 附录：完整功能检查清单
 
 完成所有 Phase 后，按以下清单逐项验证：
@@ -821,3 +1020,8 @@ def _draw_checkerboard(self, painter: QPainter, rect: QRect):
 | 12| 重做             | 撤销后 Ctrl+Shift+Z                       | 恢复操作                     |
 | 13| 关闭保存确认      | 编辑后直接关闭窗口                         | 弹出保存确认对话框             |
 | 14| 中文路径          | 图片放在含中文的路径下打开/保存             | 正常读写，无乱码               |
+| 15| 符合画布          | 抠图后 → 菜单「图像 → 符合画布」         | 图片裁切至主体边界框，四周透明行列去除 |
+| 16| 符合画布（无透明） | 不透明图 → 菜单「图像 → 符合画布」       | 弹出提示"无需裁切"，图片不变    |
+| 17| 缩放（锁比）      | 任意图 → 缩放，宽 400，高 0，锁比=True    | 高度自动等比计算，图片不变形    |
+| 18| 缩放（拉伸）      | 任意图 → 缩放 200×200，锁比=False         | 图片被拉伸为正方形              |
+| 19| 缩放撤销          | 缩放后 Ctrl+Z                            | 图片尺寸恢复                   |
