@@ -170,3 +170,134 @@ class ImageProcessor:
         else:
             result[y1:y2, x1:x2] = 0
         return result
+
+    @staticmethod
+    def trim_to_content(img: np.ndarray, threshold: int = 0) -> np.ndarray:
+        """
+        裁去图片四周多余的透明像素，保留主体内容的最小边界框。
+        等同于 Photoshop「图像 → 裁切 → 基于透明像素」。
+
+        Args:
+            img:       BGRA 图像（含 alpha 通道）
+            threshold: alpha 阈值，> threshold 才算不透明，默认 0
+
+        Returns:
+            裁切后的新 BGRA 数组
+
+        Raises:
+            ValueError: 图片全透明，无内容可保留
+        """
+        if img.shape[2] < 4:
+            raise ValueError("图片不含透明通道，无需符合画布操作")
+        alpha = img[:, :, 3]
+        mask = alpha > threshold
+        if not mask.any():
+            raise ValueError("图片全透明，无内容可保留")
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        r0, r1 = int(np.where(rows)[0][0]), int(np.where(rows)[0][-1])
+        c0, c1 = int(np.where(cols)[0][0]), int(np.where(cols)[0][-1])
+        return img[r0:r1 + 1, c0:c1 + 1].copy()
+
+    # 对外暴露的插值模式名称 → cv2 常量映射
+    INTERP_MODES: dict[str, int] = {
+        "lanczos":  cv2.INTER_LANCZOS4,   # 高质量插值（默认）
+        "nearest":  cv2.INTER_NEAREST,    # 最近邻：零混色，保留原始像素颗粒
+    }
+
+    @staticmethod
+    def resize_to_size(img: np.ndarray,
+                       target_w: int,
+                       target_h: int,
+                       keep_aspect: bool = True,
+                       sharpen: bool = True,
+                       interp: str = "lanczos") -> np.ndarray:
+        """
+        将图片重采样到指定尺寸。
+
+        keep_aspect=True：等比缩放，以 min(tw/w, th/h) 为缩放系数；
+            若 target_w 或 target_h 其中一个为 0，则仅按另一边等比计算。
+        keep_aspect=False：强制拉伸到精确的 target_w × target_h。
+
+        Args:
+            img:         BGRA 图像
+            target_w:    目标宽度（像素）；0 表示按高度自动（keep_aspect=True 有效）
+            target_h:    目标高度（像素）；0 表示按宽度自动（keep_aspect=True 有效）
+            keep_aspect: 是否保持宽高比，默认 True
+            sharpen:     缩放后是否应用非锐化蒙版（interp="nearest" 时自动忽略）
+            interp:      插值模式："lanczos"（高质量）或 "nearest"（最近邻/保留像素）
+
+        Returns:
+            重采样后的新 BGRA 数组
+        """
+        if target_w < 0 or target_h < 0:
+            raise ValueError("目标尺寸不能为负数")
+        if target_w == 0 and target_h == 0:
+            raise ValueError("target_w 和 target_h 不能同时为 0")
+
+        h, w = img.shape[:2]
+        if keep_aspect:
+            if target_w == 0:
+                scale = target_h / h
+            elif target_h == 0:
+                scale = target_w / w
+            else:
+                scale = min(target_w / w, target_h / h)
+            new_w = max(1, int(round(w * scale)))
+            new_h = max(1, int(round(h * scale)))
+        else:
+            new_w = target_w if target_w > 0 else w
+            new_h = target_h if target_h > 0 else h
+
+        cv2_interp = ImageProcessor.INTERP_MODES.get(interp, cv2.INTER_LANCZOS4)
+        resized = cv2.resize(img, (new_w, new_h), interpolation=cv2_interp)
+
+        # 最近邻不需要也不应该锐化（像素已经是原色，锐化反而会产生光晕）
+        if sharpen and interp != "nearest":
+            resized = ImageProcessor._unsharp_mask(resized)
+
+        return resized
+
+    @staticmethod
+    def enhance_detail(img: np.ndarray,
+                       sigma_s: float = 10.0,
+                       sigma_r: float = 0.15) -> np.ndarray:
+        """
+        变清晰：使用 cv2.detailEnhance 边缘保留滤波直接增强细节（不改变尺寸）。
+
+        Args:
+            img:     BGRA uint8 图像
+            sigma_s: 局部邻域大小（0~200），越大增强范围越广；默认 10
+            sigma_r: 色彩容差（0~1），越小边缘保护越强；默认 0.15
+
+        Returns:
+            增强后的 BGRA 图像（与输入尺寸相同）
+        """
+        bgr = img[:, :, :3]
+        enhanced_bgr = cv2.detailEnhance(bgr, sigma_s=sigma_s, sigma_r=sigma_r)
+        result = img.copy()
+        result[:, :, :3] = enhanced_bgr
+        return result
+
+    @staticmethod
+    def _unsharp_mask(img: np.ndarray,
+                      sigma: float = 1.0,
+                      strength: float = 0.45) -> np.ndarray:
+        """
+        非锐化蒙版（Unsharp Mask）：提升缩放后图片的感知清晰度。
+
+        原理：sharpened = original × (1+s) - blurred × s
+        只作用于 BGR 三通道，alpha 通道保持不变，避免透明边缘产生光晕。
+
+        Args:
+            img:      BGRA 图像
+            sigma:    高斯模糊半径，越大锐化范围越宽，默认 1.0
+            strength: 锐化强度（0~1），默认 0.45（适中，不过度）
+        """
+        bgr = img[:, :, :3].astype(np.float32)
+        blurred = cv2.GaussianBlur(bgr, (0, 0), sigma)
+        sharpened = bgr * (1.0 + strength) - blurred * strength
+        sharpened = np.clip(sharpened, 0, 255).astype(np.uint8)
+        result = img.copy()
+        result[:, :, :3] = sharpened
+        return result

@@ -17,6 +17,8 @@ class MainWindow(QMainWindow):
     export_triggered = Signal()
     undo_triggered = Signal()
     redo_triggered = Signal()
+    trim_triggered = Signal()
+    resize_triggered = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -151,21 +153,40 @@ class MainWindow(QMainWindow):
         rotate_ccw_action.triggered.connect(self._toolbar.rotate_ccw_clicked)
         edit_menu.addAction(rotate_ccw_action)
 
+        # 图像菜单
+        image_menu = menubar.addMenu("图像")
+
+        self.trim_action = QAction("符合画布", self)
+        self.trim_action.setStatusTip("裁去四周透明像素，保留主体内容的最小边界框")
+        self.trim_action.triggered.connect(self.trim_triggered)
+        image_menu.addAction(self.trim_action)
+
+        self.resize_action = QAction("缩放图片...", self)
+        self.resize_action.setShortcut(
+            QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.ALT | Qt.Key.Key_R)
+        )
+        self.resize_action.setStatusTip("将图片重采样到指定像素尺寸")
+        self.resize_action.triggered.connect(self.resize_triggered)
+        image_menu.addAction(self.resize_action)
+
         # 视图菜单
         view_menu = menubar.addMenu("视图")
 
-        zoom_in_action = QAction("放大", self)
+        zoom_in_action = QAction("放大视图（不修改图片）", self)
         zoom_in_action.setShortcut(QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Equal))
+        zoom_in_action.setStatusTip("放大画布显示比例，图片像素数量不变")
         zoom_in_action.triggered.connect(self._canvas.zoom_in)
         view_menu.addAction(zoom_in_action)
 
-        zoom_out_action = QAction("缩小", self)
+        zoom_out_action = QAction("缩小视图（不修改图片）", self)
         zoom_out_action.setShortcut(QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Minus))
+        zoom_out_action.setStatusTip("缩小画布显示比例，图片像素数量不变")
         zoom_out_action.triggered.connect(self._canvas.zoom_out)
         view_menu.addAction(zoom_out_action)
 
         zoom_fit_action = QAction("适合窗口", self)
         zoom_fit_action.setShortcut(QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_0))
+        zoom_fit_action.setStatusTip("自适应显示，图片像素数量不变")
         zoom_fit_action.triggered.connect(self._canvas.zoom_fit)
         view_menu.addAction(zoom_fit_action)
 

@@ -1,8 +1,8 @@
 # EasyPicture 技术设计文档
 
-**版本**：v1.0  
+**版本**：v1.1  
 **日期**：2026-03-09  
-**技术栈**：Python 3.11+ / OpenCV 4.x / PyQt6 / NumPy  
+**技术栈**：Python 3.11+ / OpenCV 4.x（contrib） / PyQt6 / NumPy / onnxruntime  
 **包管理**：uv（替代 pip + venv）
 
 ---
@@ -60,7 +60,9 @@
 ```
 easyPicture/
 ├── main.py                     # 应用入口，创建 QApplication 和 MainWindow
-├── requirements.txt            # 依赖列表
+├── pyproject.toml              # 依赖配置（uv）
+├── models/                     # AI 模型文件（不提交 git，需手动放置）
+│   └── realesrgan.onnx         # Real-ESRGAN ONNX 模型（realesr-general-x4v3）
 ├── resources/
 │   └── icons/                  # 工具栏图标（SVG/PNG）
 ├── ui/
@@ -73,7 +75,8 @@ easyPicture/
 │   ├── __init__.py
 │   ├── image_model.py          # ImageModel：持有当前图像状态
 │   ├── image_processor.py      # 裁剪、旋转、删除选区等基础操作
-│   ├── grabcut.py              # GrabCut 抠图处理
+│   ├── grabcut.py              # GrabCut 抠图处理（QThread 异步）
+│   ├── realesrgan.py           # Real-ESRGAN 变清晰推理（onnxruntime + QThread）
 │   └── history.py              # 撤销/重做历史栈
 ├── controller/
 │   ├── __init__.py
@@ -197,7 +200,56 @@ return img[r0:r1+1, c0:c1+1].copy()
 
 **线程**：在 `QThread` 子线程执行，主线程通过 `progress` 信号更新进度条。
 
-### 3.4 HistoryManager（撤销/重做）
+### 3.4 RealESRGAN（AI 变清晰）
+
+负责加载本地 ONNX 模型并对图像执行 Real-ESRGAN 推理，支持 2x/4x 放大与可调去噪强度。
+
+**模型路径**：`{project_root}/models/realesr-general-x4v3.onnx`（固定路径，需手动放置）
+
+**推理流程**：
+
+```
+BGRA → 分离 BGR / Alpha
+denoise_strength > 0 时：BGR → GaussianBlur(sigma = denoise_strength * 1.5)
+BGR → normalize([0,1]) → [1, 3, H, W] float32
+→ 按 tile_size=512, tile_pad=32 分块
+→ 每块送入 onnxruntime InferenceSession 推理
+→ 合并分块输出 [1, 3, H*4, W*4]
+→ scale=4：直接输出 4H×4W
+   scale=2：LANCZOS4 下采样到 2H×2W
+Alpha → cv2.resize LANCZOS4 → 同比放大（scale 倍）
+→ 合并 BGRA 输出
+```
+
+**去噪实现说明**：`denoise_strength`（0~1）通过在推理前对输入 BGR 做轻微高斯平滑实现；
+0 = 不平滑（保留纹理颗粒），1 = sigma=1.5（较强平滑，适合噪点图）。
+
+**分块重叠处理**：每块扩展 `tile_pad` 像素后推理，合并时裁去重叠部分，避免块边缘接缝。
+
+**线程**：`RealESRGANWorker(QObject)` 在 `QThread` 子线程执行，按分块数量汇报 `progress` 信号。
+
+**接口**：
+
+```python
+def is_model_available() -> bool
+def realesrgan_upscale_bgra(img: np.ndarray,
+                             scale: int = 4,
+                             denoise_strength: float = 0.5,
+                             tile_size: int = 512,
+                             tile_pad: int = 32) -> np.ndarray
+
+class RealESRGANWorker(QObject):
+    progress = Signal(int)         # 0-100
+    finished = Signal(np.ndarray)  # 处理后的 BGRA（scale 倍尺寸）
+    failed = Signal(str)
+
+    def __init__(self, img: np.ndarray,
+                 scale: int = 4,
+                 denoise_strength: float = 0.5) -> None
+    def run(self) -> None
+```
+
+### 3.5 HistoryManager（撤销/重做）
 
 ```python
 class HistoryManager:
@@ -336,12 +388,13 @@ uv 速度比 pip 快 10-100 倍，自动管理虚拟环境，无需手动 activa
 [project]
 name = "easypicture"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
-    "opencv-python>=4.8.0",
+    "opencv-contrib-python>=4.8.0",
     "PyQt6>=6.5.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
+    "onnxruntime>=1.17.0",
 ]
 ```
 

@@ -17,18 +17,19 @@
 ## 实现阶段总览
 
 ```
-Phase 0: 环境初始化
-Phase 1: 数据模型层
-Phase 2: 图像处理核心层
-Phase 3: 主窗口与画布骨架
-Phase 4: 文件导入/导出
-Phase 5: 旋转功能
-Phase 6: 区域选择与裁剪
-Phase 7: 删除选区内容
-Phase 8: GrabCut 抠图
-Phase 9: 撤销/重做
+Phase 0:  环境初始化
+Phase 1:  数据模型层
+Phase 2:  图像处理核心层
+Phase 3:  主窗口与画布骨架
+Phase 4:  文件导入/导出
+Phase 5:  旋转功能
+Phase 6:  区域选择与裁剪
+Phase 7:  删除选区内容
+Phase 8:  GrabCut 抠图
+Phase 9:  撤销/重做
 Phase 10: 符合画布 & 缩放到指定尺寸
 Phase 11: 体验打磨与打包
+Phase 12: AI 变清晰（Real-ESRGAN ONNX）
 ```
 
 ---
@@ -1000,6 +1001,174 @@ self.window.action_resize.triggered.connect(self.do_resize_to_size)
 
 ---
 
+---
+
+## Phase 12：AI 变清晰（Real-ESRGAN）
+
+### Step 12.1 — 添加 onnxruntime 依赖
+
+**任务**：在 `pyproject.toml` 添加 `onnxruntime`，安装后验证可导入。
+
+```toml
+dependencies = [
+    ...,
+    "onnxruntime>=1.17.0",
+]
+```
+
+```bash
+uv sync
+uv run python -c "import onnxruntime; print(onnxruntime.__version__)"
+```
+
+---
+
+### Step 12.2 — 准备模型文件
+
+**任务**：将 `realesrgan.onnx`（Real-ESRGAN general-x4v3 ONNX 格式）放入项目根目录 `models/` 下。
+
+- 模型来源：HuggingFace 社区 ONNX 导出版（搜索 `realesr-general-x4v3 onnx`）
+- 输入格式：`[1, 3, H, W]` float32，RGB，值域 `[0, 1]`
+- 输出格式：`[1, 3, H*4, W*4]` float32，RGB，值域 `[0, 1]`
+- 同时在 `.gitignore` 中添加 `models/*.onnx`，避免大文件入库
+
+**验证**：
+
+```python
+import onnxruntime as ort
+sess = ort.InferenceSession("models/realesrgan.onnx")
+print("输入名:", sess.get_inputs()[0].name)
+print("输入形状:", sess.get_inputs()[0].shape)
+```
+
+---
+
+### Step 12.3 — 实现 `core/realesrgan.py`
+
+**任务**：实现分块推理函数与 QThread Worker。
+
+```python
+from pathlib import Path
+import cv2
+import numpy as np
+import onnxruntime as ort
+from PyQt6.QtCore import QObject, pyqtSignal as Signal
+
+_MODEL_PATH = Path(__file__).parent.parent / "models" / "realesr-general-x4v3.onnx"
+
+def is_model_available() -> bool:
+    return _MODEL_PATH.exists()
+
+def realesrgan_upscale_bgra(img: np.ndarray,
+                             scale: int = 4,
+                             denoise_strength: float = 0.5,
+                             tile_size: int = 512,
+                             tile_pad: int = 32) -> np.ndarray:
+    """
+    Real-ESRGAN 超分辨率放大。
+    scale=4: 直接输出 4x 尺寸（H*4 × W*4）
+    scale=2: 模型推理到 4x 后 LANCZOS4 下采样到 2x（H*2 × W*2）
+    denoise_strength: 0=保留纹理颗粒, 1=强去噪（推理前对输入做高斯平滑，sigma=strength*1.5）
+    """
+    ...  # 分块推理 + 按 scale 决定是否 LANCZOS4 下采样
+
+class RealESRGANWorker(QObject):
+    progress = Signal(int)
+    finished = Signal(np.ndarray)  # BGRA，scale 倍尺寸
+    failed = Signal(str)
+
+    def __init__(self, img: np.ndarray,
+                 scale: int = 4,
+                 denoise_strength: float = 0.5) -> None: ...
+    def run(self) -> None: ...
+```
+
+**关键实现点**：
+- BGR → RGB → float32 normalize → `[1, 3, H, W]`
+- `denoise_strength > 0` 时推理前对 BGR 做 `GaussianBlur(sigma=denoise_strength * 1.5)`
+- 分块时每块扩展 `tile_pad` 后推理，合并时裁去扩展部分
+- 输出反 normalize → uint8 → RGB → BGR，合并 Alpha
+- `scale=2`：合并后对 BGR 和 Alpha 分别 LANCZOS4 下采样到 2x
+
+**验证**：
+
+```bash
+uv run python -c "
+import numpy as np
+from core.realesrgan import realesrgan_upscale_bgra
+img = np.zeros((100,100,4), dtype=np.uint8)
+img[:,:,3] = 255
+result = realesrgan_upscale_bgra(img, scale=2)
+print('2x OK, shape:', result.shape)  # (200, 200, 4)
+result4 = realesrgan_upscale_bgra(img, scale=4)
+print('4x OK, shape:', result4.shape)  # (400, 400, 4)
+"
+```
+
+---
+
+### Step 12.4 — 连接 Controller
+
+**任务**：更新 `controller/app_controller.py`，将 `do_ai_clarify` 改为弹出 `AiClarifyDialog` 后使用 `RealESRGANWorker`。
+
+`AiClarifyDialog` 对话框布局：
+
+```
+┌─ AI 变清晰 ─────────────────────────┐
+│  放大倍率：● 2x   ○ 4x              │
+│                                     │
+│  去噪强度：[──────●──] 0.5          │
+│  （0 = 保留纹理  /  1 = 强力去噪）   │
+│                                     │
+│  输出尺寸：200×200 → 400×400        │
+│        [ 取消 ]  [ 开始处理 ]        │
+└─────────────────────────────────────┘
+```
+
+```python
+from core.realesrgan import RealESRGANWorker, is_model_available
+from ui.dialogs import AiClarifyDialog
+
+def do_ai_clarify(self) -> None:
+    if self.model.image is None:
+        QMessageBox.information(self.window, "提示", "请先打开一张图片")
+        return
+    if not is_model_available():
+        QMessageBox.critical(self.window, "模型未找到",
+            "请将 realesr-general-x4v3.onnx 放入项目 models/ 目录后重试。\n"
+            "下载地址：https://github.com/xinntao/Real-ESRGAN/releases")
+        return
+    dlg = AiClarifyDialog(self.model.width, self.model.height, self.window)
+    result = dlg.get_values()  # {'scale': 2 or 4, 'denoise': 0.0~1.0}
+    if result is None:
+        return
+    # 启动 QThread + QProgressDialog（同 do_grabcut 模式）
+    self._esrgan_thread = QThread()
+    self._esrgan_worker = RealESRGANWorker(
+        self.model.image.copy(),
+        scale=result['scale'],
+        denoise_strength=result['denoise'],
+    )
+    self._esrgan_worker.moveToThread(self._esrgan_thread)
+    # ... 连接信号，_on_esrgan_done 中调用 _apply_transform(zoom_fit=True)
+```
+
+---
+
+### Step 12.5 — 更新工具栏
+
+**任务**：`ui/toolbar.py` 中将按钮文字改为 `"✨\nAI变清晰"`，tooltip 说明 Real-ESRGAN 2x/4x 放大。
+
+**验证**：
+- 未放模型时点击按钮，弹出"模型未找到"提示（含下载地址）
+- 放置模型后点击，弹出 AiClarifyDialog，选择放大倍率（2x/4x）和去噪强度
+- 确认后出现进度条，处理完成后图片放大并细节清晰
+- 选 2x：图片尺寸变为原来 2 倍；选 4x：变为 4 倍
+- 可在放大后的新尺寸上进行裁剪等操作
+- 可 Ctrl+Z 撤销
+
+---
+
 ## 附录：完整功能检查清单
 
 完成所有 Phase 后，按以下清单逐项验证：
@@ -1025,3 +1194,8 @@ self.window.action_resize.triggered.connect(self.do_resize_to_size)
 | 17| 缩放（锁比）      | 任意图 → 缩放，宽 400，高 0，锁比=True    | 高度自动等比计算，图片不变形    |
 | 18| 缩放（拉伸）      | 任意图 → 缩放 200×200，锁比=False         | 图片被拉伸为正方形              |
 | 19| 缩放撤销          | 缩放后 Ctrl+Z                            | 图片尺寸恢复                   |
+| 20| AI 变清晰（2x）   | 放置模型 → 打开图片 → 点击「AI变清晰」→ 选 2x，去噪 0.5 | 进度条显示，完成后图片尺寸变为 2 倍，细节清晰锐利，可在新尺寸上裁剪 |
+| 21| AI 变清晰（4x）   | 放置模型 → 打开图片 → 点击「AI变清晰」→ 选 4x | 图片尺寸变为 4 倍，细节清晰锐利 |
+| 22| AI 变清晰（去噪）  | 选去噪强度 1.0 处理噪点图                 | 噪点明显减少，细节保留          |
+| 23| AI 变清晰（无模型）| 删除模型文件 → 点击「AI变清晰」           | 弹出"模型未找到"提示（含下载地址），不崩溃 |
+| 24| AI 变清晰撤销     | 处理完成后 Ctrl+Z                        | 恢复处理前的图片（原始尺寸）      |

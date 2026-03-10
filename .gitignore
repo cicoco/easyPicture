@@ -61,3 +61,7 @@ desktop.ini
 hook-*.py
 
 .shrimp/
+
+# AI 模型（二进制大文件，不提交 git）
+models/*.pth
+models/*.onnx

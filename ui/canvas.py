@@ -64,6 +64,8 @@ class Canvas(QWidget):
         self._pan_offset: QPoint = QPoint(0, 0)
         self._pan_start: Optional[QPoint] = None
         self._space_held: bool = False
+        # 用户是否手动调整过缩放；False 时 resizeEvent 才会自动 zoom_fit
+        self._user_zoomed: bool = False
 
         self._tool: CanvasTool = CanvasTool.NONE
 
@@ -100,6 +102,7 @@ class Canvas(QWidget):
         self._selection_rect = None
         self._drag_start = None
         self._drag_end = None
+        self._user_zoomed = False   # 新图加载后允许自动 fit
         self.zoom_fit()
 
     def refresh(self, img: np.ndarray) -> None:
@@ -137,13 +140,16 @@ class Canvas(QWidget):
             (self.width() - img_w) // 2,
             (self.height() - img_h) // 2,
         )
+        self._user_zoomed = False   # 显式 fit 后重置，下次 resizeEvent 才会自动 fit
         self.zoom_changed.emit(self.zoom_factor)
         self.update()
 
     def zoom_in(self) -> None:
+        self._user_zoomed = True
         self._set_zoom(min(self.zoom_factor + 0.25, 8.0))
 
     def zoom_out(self) -> None:
+        self._user_zoomed = True
         self._set_zoom(max(self.zoom_factor - 0.25, 0.05))
 
     def get_selection_image_coords(self) -> Optional[Tuple[int, int, int, int]]:
@@ -213,7 +219,9 @@ class Canvas(QWidget):
         """根据鼠标位置更新光标形状。"""
         if self._space_held:
             return
-        if self._tool == CanvasTool.CROP and self._selection_rect and pos:
+        if self._tool == CanvasTool.PAN:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self._tool == CanvasTool.CROP and self._selection_rect and pos:
             hit, idx = self._hit_test(pos)
             if hit == "handle":
                 self.setCursor(_HANDLE_CURSORS[idx])
@@ -233,11 +241,23 @@ class Canvas(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if self._pixmap:
+        if not self._pixmap:
+            return
+        if not self._user_zoomed:
+            # 未手动缩放（初始加载状态）：正常自适应
             self.zoom_fit()
+        else:
+            # 用户已手动缩放：保持缩放比，平移偏移跟随窗口尺寸变化居中补偿
+            old = event.oldSize()
+            if old.isValid():
+                dx = (event.size().width() - old.width()) // 2
+                dy = (event.size().height() - old.height()) // 2
+                self._pan_offset += QPoint(dx, dy)
+            self.update()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self._user_zoomed = True
             delta = event.angleDelta().y()
             if delta > 0:
                 self._set_zoom(min(self.zoom_factor * 1.15, 8.0))
@@ -271,7 +291,7 @@ class Canvas(QWidget):
 
         pos = event.pos()
 
-        if self._space_held:
+        if self._space_held or self._tool == CanvasTool.PAN:
             self._pan_start = pos
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
@@ -300,7 +320,8 @@ class Canvas(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pos = event.pos()
 
-        if self._space_held and self._pan_start is not None:
+        if (self._space_held or self._tool == CanvasTool.PAN) \
+                and self._pan_start is not None:
             self._pan_offset += pos - self._pan_start
             self._pan_start = pos
             self.update()
@@ -329,6 +350,11 @@ class Canvas(QWidget):
         pos = event.pos()
 
         if self._space_held:
+            self._pan_start = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            return
+
+        if self._tool == CanvasTool.PAN:
             self._pan_start = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             return

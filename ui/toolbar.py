@@ -2,7 +2,7 @@ from __future__ import annotations
 from enum import IntEnum
 
 from PyQt6.QtCore import pyqtSignal as Signal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QFrame, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QFrame, QLabel, QSizePolicy
 
 
 class CanvasTool(IntEnum):
@@ -10,6 +10,7 @@ class CanvasTool(IntEnum):
     SELECT = 1
     CROP = 2
     GRABCUT = 3
+    PAN = 4
 
 
 class ToolBar(QWidget):
@@ -21,6 +22,9 @@ class ToolBar(QWidget):
     grabcut_clicked = Signal()
     rotate_cw_clicked = Signal()
     rotate_ccw_clicked = Signal()
+    trim_clicked = Signal()
+    resize_clicked = Signal()
+    clarify_clicked = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -66,8 +70,22 @@ class ToolBar(QWidget):
         """)
 
         # 工具分组标题
-        select_label = QLabel("选择")
+        select_label = QLabel("视图")
         layout.addWidget(select_label)
+
+        # 手型平移工具
+        btn_pan = self._make_tool_btn("✋\n平移", CanvasTool.PAN)
+        btn_pan.setToolTip("平移工具：拖拽移动画面（也可按住空格键临时切换）")
+        layout.addWidget(btn_pan)
+
+        # 分隔线
+        line0 = QFrame()
+        line0.setFrameShape(QFrame.Shape.HLine)
+        line0.setStyleSheet("color: #444;")
+        layout.addWidget(line0)
+
+        select_label2 = QLabel("选择")
+        layout.addWidget(select_label2)
 
         # 矩形选框
         btn_select = self._make_tool_btn("⬚\n选框", CanvasTool.SELECT)
@@ -145,6 +163,64 @@ class ToolBar(QWidget):
         btn_ccw.setToolTip("逆时针旋转 90°")
         btn_ccw.clicked.connect(self.rotate_ccw_clicked)
         layout.addWidget(btn_ccw)
+
+        # 分隔线
+        line3 = QFrame()
+        line3.setFrameShape(QFrame.Shape.HLine)
+        line3.setStyleSheet("color: #444;")
+        layout.addWidget(line3)
+
+        image_label = QLabel("图像")
+        layout.addWidget(image_label)
+
+        # 符合画布
+        btn_trim = QPushButton("⊡\n符合画布")
+        btn_trim.setFixedHeight(50)
+        btn_trim.setToolTip(
+            "符合画布：裁去四周透明像素，保留主体内容最小边界框\n"
+            "（不改变图片质量，仅裁掉空白区域）"
+        )
+        btn_trim.clicked.connect(self.trim_clicked)
+        layout.addWidget(btn_trim)
+
+        # 缩放到指定尺寸
+        btn_resize = QPushButton("⇲\n改变尺寸")
+        btn_resize.setFixedHeight(50)
+        btn_resize.setToolTip(
+            "改变图片尺寸（真正修改像素数量）\n"
+            "⚠ 这会重新采样图片，与 Cmd+/- 的视图缩放不同\n"
+            "缩小后像素减少，放大看会变模糊，可 Cmd+Z 撤销"
+        )
+        btn_resize.clicked.connect(self.resize_clicked)
+        layout.addWidget(btn_resize)
+
+        # AI 变清晰
+        btn_clarify = QPushButton("✨\nAI变清晰")
+        btn_clarify.setFixedHeight(50)
+        btn_clarify.setToolTip(
+            "AI 变清晰（Real-ESRGAN）\n"
+            "使用 AI 超分辨率真正重建细节\n"
+            "选择 2x 或 4x 放大，放大后可裁剪\n"
+            "需要 models/realesr-general-x4v3.pth"
+        )
+        btn_clarify.setStyleSheet("""
+            QPushButton {
+                background: #1a3a2a;
+                color: #ccc;
+                border: 1px solid #2d7a50;
+                border-radius: 6px;
+                font-size: 11px;
+                padding: 6px 2px;
+            }
+            QPushButton:hover {
+                background: #225c3c;
+                border-color: #4acd80;
+                color: #fff;
+            }
+            QPushButton:pressed { background: #112a1e; }
+        """)
+        btn_clarify.clicked.connect(self.clarify_clicked)
+        layout.addWidget(btn_clarify)
 
         layout.addStretch()
 

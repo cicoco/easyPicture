@@ -23,6 +23,7 @@ class CropPanel(QWidget):
         self._updating = False   # 防止信号循环
         self._img_w = 0
         self._img_h = 0
+        self._zoom_factor: float = 1.0
         self._init_ui()
         self.hide()  # 默认隐藏，切换到裁剪工具时才显示
 
@@ -92,9 +93,9 @@ class CropPanel(QWidget):
         self._spin_h = self._make_spin()
         layout.addWidget(self._spin_h)
 
-        # 提示文字
-        self._hint = QLabel("裁剪后可通过 文件→导出 保存结果")
-        self._hint.setStyleSheet("color: #666; font-size: 11px; background:transparent; border:none;")
+        # 尺寸提示（同时显示原图像素和视图像素）
+        self._hint = QLabel("在图片上拖拽框选裁剪区域")
+        self._hint.setStyleSheet("color: #888; font-size: 11px; background:transparent; border:none;")
         layout.addWidget(self._hint)
 
         layout.addStretch()
@@ -145,6 +146,11 @@ class CropPanel(QWidget):
         self._spin_h.setMaximum(h)
         self._updating = False
 
+    def set_zoom(self, zoom_factor: float) -> None:
+        """由 Canvas zoom_changed 信号触发，更新视图尺寸提示。"""
+        self._zoom_factor = zoom_factor
+        self._update_hint()
+
     def set_selection(self, x1: int, y1: int, x2: int, y2: int) -> None:
         """由 Canvas/Controller 调用，同步选区到数值框。"""
         self._updating = True
@@ -153,6 +159,7 @@ class CropPanel(QWidget):
         self._spin_w.setValue(max(1, x2 - x1))
         self._spin_h.setValue(max(1, y2 - y1))
         self._updating = False
+        self._update_hint()
 
     def get_selection(self) -> tuple[int, int, int, int]:
         """返回当前 spinbox 的选区 (x1, y1, x2, y2)。"""
@@ -182,3 +189,32 @@ class CropPanel(QWidget):
         self._spin_h.setValue(max(1, h))
         self._updating = False
         self.values_changed.emit(x1, y1, x1 + w, y1 + h)
+        self._update_hint()
+
+    def _update_hint(self) -> None:
+        """根据当前选区尺寸和缩放比，更新提示标签。"""
+        w = self._spin_w.value()
+        h = self._spin_h.value()
+        if w <= 0 or h <= 0:
+            self._hint.setText("在图片上拖拽框选裁剪区域")
+            self._hint.setStyleSheet(
+                "color: #666; font-size: 11px; background:transparent; border:none;")
+            return
+
+        z = self._zoom_factor
+        if abs(z - 1.0) < 0.01:
+            # 缩放接近 100%，只显示原图尺寸
+            self._hint.setText(f"裁剪结果：{w} × {h} px")
+            self._hint.setStyleSheet(
+                "color: #aaa; font-size: 11px; background:transparent; border:none;")
+        else:
+            # 显示视图尺寸（当前屏幕上看到的像素数）和原图尺寸
+            vw = int(round(w * z))
+            vh = int(round(h * z))
+            pct = int(round(z * 100))
+            self._hint.setText(
+                f"裁剪结果：{w} × {h} px（当前 {pct}% 视图下看起来是 {vw} × {vh} px）"
+            )
+            color = "#f0a030" if z > 1.0 else "#888"
+            self._hint.setStyleSheet(
+                f"color: {color}; font-size: 11px; background:transparent; border:none;")

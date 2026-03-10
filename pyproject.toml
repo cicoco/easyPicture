@@ -3,10 +3,11 @@ name = "easypicture"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "opencv-python>=4.8.0",
+    "opencv-contrib-python>=4.8.0",
     "PyQt6>=6.5.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
+    "onnxruntime>=1.17.0",
 ]
 
 [project.scripts]
