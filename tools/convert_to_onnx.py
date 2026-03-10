@@ -19,6 +19,12 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
+# Windows 终端默认 cp1252，强制 stdout/stderr 使用 UTF-8 避免中文乱码
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

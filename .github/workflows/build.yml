@@ -59,6 +59,9 @@ jobs:
   # ─── Windows .exe ──────────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"          # 全局启用 UTF-8 模式，避免中文 print 报 cp1252 错误
+      PYTHONIOENCODING: utf-8
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,12 +82,14 @@ jobs:
           MODEL_URL: ${{ secrets.MODEL_DOWNLOAD_URL }}
         shell: pwsh
         run: |
+          # 切换控制台代码页为 UTF-8，避免中文输出乱码
+          chcp 65001 | Out-Null
           New-Item -ItemType Directory -Force -Path models | Out-Null
           if ($env:MODEL_URL) {
             Invoke-WebRequest -Uri $env:MODEL_URL -OutFile models/RealESRGAN_x4plus_anime_6B.pth
             uv run --with torch --with onnx python tools/convert_to_onnx.py RealESRGAN_x4plus_anime_6B.pth
           } else {
-            Write-Host "未配置 MODEL_DOWNLOAD_URL Secret，跳过模型打包"
+            Write-Host "MODEL_DOWNLOAD_URL not configured, skipping model (AI feature unavailable)"
           }
 
       - name: Build .exe
