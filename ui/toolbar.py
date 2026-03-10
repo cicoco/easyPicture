@@ -11,6 +11,7 @@ class CanvasTool(IntEnum):
     CROP = 2
     GRABCUT = 3
     PAN = 4
+    LAYER_MOVE = 5
 
 
 class ToolBar(QWidget):
@@ -87,6 +88,11 @@ class ToolBar(QWidget):
         btn_select = self._make_tool_btn("⬚\n选框", CanvasTool.SELECT)
         layout.addWidget(btn_select)
 
+        # 图层拖拽
+        btn_layer = self._make_tool_btn("◫\n图层", CanvasTool.LAYER_MOVE)
+        btn_layer.setToolTip("图层工具：点击选中图层并拖拽移动")
+        layout.addWidget(btn_layer)
+
         # 裁剪
         btn_crop = self._make_tool_btn("✂\n裁剪", CanvasTool.CROP)
         layout.addWidget(btn_crop)
@@ -133,60 +139,12 @@ class ToolBar(QWidget):
         btn_delete.clicked.connect(self.delete_clicked)
         layout.addWidget(btn_delete)
 
-        layout.addWidget(self._make_divider())
-
-        rotate_label = QLabel("旋转")
-        layout.addWidget(rotate_label)
-
-        # 顺时针旋转
-        btn_cw = QPushButton("↻\n顺时针")
-        btn_cw.setFixedHeight(50)
-        btn_cw.setToolTip("顺时针旋转 90°")
-        btn_cw.clicked.connect(self.rotate_cw_clicked)
-        layout.addWidget(btn_cw)
-
-        # 逆时针旋转
-        btn_ccw = QPushButton("↺\n逆时针")
-        btn_ccw.setFixedHeight(50)
-        btn_ccw.setToolTip("逆时针旋转 90°")
-        btn_ccw.clicked.connect(self.rotate_ccw_clicked)
-        layout.addWidget(btn_ccw)
-
-        layout.addWidget(self._make_divider())
-
-        image_label = QLabel("图像")
-        layout.addWidget(image_label)
-
-        # 符合画布
-        btn_trim = QPushButton("⊡\n符合画布")
-        btn_trim.setFixedHeight(50)
-        btn_trim.setToolTip(
-            "符合画布：裁去四周透明像素，保留主体内容最小边界框\n"
-            "（不改变图片质量，仅裁掉空白区域）"
-        )
-        btn_trim.clicked.connect(self.trim_clicked)
-        layout.addWidget(btn_trim)
-
-        # 缩放到指定尺寸
-        btn_resize = QPushButton("⇲\n改变尺寸")
-        btn_resize.setFixedHeight(50)
-        btn_resize.setToolTip(
-            "改变图片尺寸（真正修改像素数量）\n"
-            "⚠ 这会重新采样图片，与 Cmd+/- 的视图缩放不同\n"
-            "缩小后像素减少，放大看会变模糊，可 Cmd+Z 撤销"
-        )
-        btn_resize.clicked.connect(self.resize_clicked)
-        layout.addWidget(btn_resize)
-
-        # AI 变清晰
+        # AI 变清晰（保留在工具栏，避免折叠进菜单）
         btn_clarify = QPushButton("✨\nAI变清晰")
         btn_clarify.setFixedHeight(50)
         btn_clarify.setToolTip(
             "AI 变清晰（Real-ESRGAN）\n"
-            "使用 AI 超分辨率真正重建细节\n"
-            "选择 2x 或 4x 放大，放大后可裁剪\n"
-            "需要 models/RealESRGAN_x4plus_anime_6B.onnx\n"
-            "（详见 models/README.md）"
+            "使用 AI 超分辨率真正重建细节"
         )
         btn_clarify.setStyleSheet("""
             QPushButton {

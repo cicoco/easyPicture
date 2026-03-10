@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal as Signal
 from PyQt6.QtGui import (QColor, QImage, QPainter, QPen, QPixmap,
                           QWheelEvent, QKeyEvent, QMouseEvent,
                           QDragEnterEvent, QDropEvent)
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QWidget, QMenu
 
 from ui.toolbar import CanvasTool
 
@@ -48,6 +48,11 @@ class Canvas(QWidget):
     delete_key_pressed = Signal()
     file_dropped = Signal(str)
     zoom_changed = Signal(float)
+    layer_selected = Signal(int)           # 图层索引（底=0，顶=n-1）
+    layer_moved = Signal(int, int, int)    # (idx, x, y)
+    layer_move_finished = Signal(int)      # (idx)
+    layer_reorder_requested = Signal(int, str)  # (idx, action)
+    layer_delete_requested = Signal(int)    # (idx)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -60,6 +65,8 @@ class Canvas(QWidget):
         self._pixmap: Optional[QPixmap] = None
         self._image_width: int = 0
         self._image_height: int = 0
+        self._layers: list[dict] = []
+        self._active_layer_idx: int = -1
         self.zoom_factor: float = 1.0
         self._pan_offset: QPoint = QPoint(0, 0)
         self._pan_start: Optional[QPoint] = None
@@ -82,6 +89,12 @@ class Canvas(QWidget):
         self._crop_handle_idx: int = -1          # 当前拖拽的手柄索引
         self._crop_drag_origin: Optional[QPoint] = None   # 按下时的画布坐标
         self._crop_rect_origin: Optional[Tuple[int, int, int, int]] = None  # 按下时的选区
+        # 图层拖拽状态
+        self._layer_dragging: bool = False
+        self._layer_drag_idx: int = -1
+        self._layer_drag_origin: Optional[QPoint] = None
+        self._layer_pos_origin: Optional[Tuple[int, int]] = None
+        self._layer_drag_changed: bool = False
 
     # ------------------------------------------------------------------
     # 公开 API
@@ -96,19 +109,46 @@ class Canvas(QWidget):
         return self._image_height
 
     def set_image(self, img: np.ndarray) -> None:
-        self._image_width = img.shape[1]
-        self._image_height = img.shape[0]
-        self._pixmap = ndarray_to_qpixmap(img)
-        self._selection_rect = None
-        self._drag_start = None
-        self._drag_end = None
-        self._user_zoomed = False   # 新图加载后允许自动 fit
-        self.zoom_fit()
+        self.set_layers(
+            [{"name": "图层 1", "image": img, "x": 0, "y": 0, "visible": True}],
+            img.shape[1],
+            img.shape[0],
+            0,
+        )
 
     def refresh(self, img: np.ndarray) -> None:
-        self._image_width = img.shape[1]
-        self._image_height = img.shape[0]
-        self._pixmap = ndarray_to_qpixmap(img)
+        self.set_layers(
+            [{"name": "图层 1", "image": img, "x": 0, "y": 0, "visible": True}],
+            img.shape[1],
+            img.shape[0],
+            0,
+        )
+        self.update()
+
+    def set_layers(self, layers: list[dict], canvas_w: int, canvas_h: int,
+                   active_idx: int) -> None:
+        """设置图层数据并重建渲染缓存。"""
+        self._image_width = canvas_w
+        self._image_height = canvas_h
+        self._layers = []
+        for layer in layers:
+            pixmap = ndarray_to_qpixmap(layer["image"])
+            self._layers.append({
+                "name": layer["name"],
+                "x": int(layer["x"]),
+                "y": int(layer["y"]),
+                "visible": bool(layer["visible"]),
+                "pixmap": pixmap,
+                "w": layer["image"].shape[1],
+                "h": layer["image"].shape[0],
+                "alpha": layer["image"][:, :, 3] if layer["image"].shape[2] >= 4 else None,
+            })
+        self._active_layer_idx = active_idx if self._layers else -1
+        # 为兼容旧逻辑，缓存一张合成图的 pixmap（仅用于是否有图可展示判断）
+        if self._layers:
+            self._pixmap = QPixmap(1, 1)
+        else:
+            self._pixmap = None
         self.update()
 
     def clear_selection(self) -> None:
@@ -127,6 +167,13 @@ class Canvas(QWidget):
     def set_tool(self, tool: CanvasTool) -> None:
         self._tool = tool
         self._update_cursor_for_position(None)
+
+    def set_active_layer(self, idx: int) -> None:
+        """仅更新活动图层高亮，不重建图层数据。"""
+        if idx < 0 or idx >= len(self._layers):
+            return
+        self._active_layer_idx = idx
+        self.update()
 
     def zoom_fit(self) -> None:
         if self._image_width == 0 or self._image_height == 0:
@@ -221,6 +268,8 @@ class Canvas(QWidget):
             return
         if self._tool == CanvasTool.PAN:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self._tool == CanvasTool.LAYER_MOVE:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
         elif self._tool == CanvasTool.CROP and self._selection_rect and pos:
             hit, idx = self._hit_test(pos)
             if hit == "handle":
@@ -274,6 +323,11 @@ class Canvas(QWidget):
             self.clear_selection()
             self.selection_cleared.emit()
         elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self._tool == CanvasTool.LAYER_MOVE:
+                if self._active_layer_idx >= 0:
+                    self.layer_delete_requested.emit(self._active_layer_idx)
+                # 图层工具下禁止退化为“删除选区”，避免误删像素
+                return
             self.delete_key_pressed.emit()
         else:
             super().keyPressEvent(event)
@@ -286,10 +340,19 @@ class Canvas(QWidget):
             super().keyReleaseEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() != Qt.MouseButton.LeftButton:
+        pos = event.pos()
+
+        if event.button() == Qt.MouseButton.RightButton and self._tool == CanvasTool.LAYER_MOVE:
+            idx = self._pick_layer_at_canvas(pos)
+            if idx >= 0:
+                self._active_layer_idx = idx
+                self.layer_selected.emit(idx)
+                self._show_layer_context_menu(idx, event.globalPosition().toPoint())
+                self.update()
             return
 
-        pos = event.pos()
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
 
         if self._space_held or self._tool == CanvasTool.PAN:
             self._pan_start = pos
@@ -309,6 +372,20 @@ class Canvas(QWidget):
                 self._crop_drag_origin = pos
                 self._crop_rect_origin = self._selection_rect
                 return
+
+        if self._tool == CanvasTool.LAYER_MOVE:
+            idx = self._pick_layer_at_canvas(pos)
+            if idx >= 0:
+                self._active_layer_idx = idx
+                self.layer_selected.emit(idx)
+                self._layer_dragging = True
+                self._layer_drag_idx = idx
+                self._layer_drag_origin = pos
+                layer = self._layers[idx]
+                self._layer_pos_origin = (layer["x"], layer["y"])
+                self._layer_drag_changed = False
+                self.update()
+            return
 
         # 新建选区（draw 模式）
         if self._tool in (CanvasTool.SELECT, CanvasTool.CROP, CanvasTool.GRABCUT):
@@ -330,6 +407,10 @@ class Canvas(QWidget):
         if self._crop_drag_mode == "draw":
             self._drag_end = pos
             self.update()
+            return
+
+        if self._layer_dragging:
+            self._do_move_layer(pos)
             return
 
         if self._crop_drag_mode == "move":
@@ -357,6 +438,20 @@ class Canvas(QWidget):
         if self._tool == CanvasTool.PAN:
             self._pan_start = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+            return
+
+        if self._layer_dragging:
+            moved_idx = self._layer_drag_idx
+            changed = self._layer_drag_changed
+            self._layer_dragging = False
+            self._layer_drag_idx = -1
+            self._layer_drag_origin = None
+            self._layer_pos_origin = None
+            self._layer_drag_changed = False
+            if changed and moved_idx >= 0:
+                self.layer_move_finished.emit(moved_idx)
+            self._update_cursor_for_position(pos)
+            self.update()
             return
 
         if self._crop_drag_mode == "draw":
@@ -391,6 +486,66 @@ class Canvas(QWidget):
     # ------------------------------------------------------------------
     # 移动 / 缩放选区的计算逻辑
     # ------------------------------------------------------------------
+
+    def _pick_layer_at_canvas(self, pos: QPoint) -> int:
+        ix, iy = self.canvas_to_image(pos.x(), pos.y())
+        for i in range(len(self._layers) - 1, -1, -1):
+            layer = self._layers[i]
+            if not layer["visible"]:
+                continue
+            lx = ix - layer["x"]
+            ly = iy - layer["y"]
+            if 0 <= lx < layer["w"] and 0 <= ly < layer["h"]:
+                alpha = layer["alpha"]
+                if alpha is None or int(alpha[ly, lx]) > 0:
+                    return i
+        return -1
+
+    def _do_move_layer(self, pos: QPoint) -> None:
+        if (self._layer_drag_origin is None or self._layer_pos_origin is None
+                or self._layer_drag_idx < 0):
+            return
+        dx = int((pos.x() - self._layer_drag_origin.x()) / self.zoom_factor)
+        dy = int((pos.y() - self._layer_drag_origin.y()) / self.zoom_factor)
+        ox, oy = self._layer_pos_origin
+        layer = self._layers[self._layer_drag_idx]
+        max_x = max(0, self._image_width - layer["w"])
+        max_y = max(0, self._image_height - layer["h"])
+        nx = max(0, min(ox + dx, max_x))
+        ny = max(0, min(oy + dy, max_y))
+        layer["x"] = nx
+        layer["y"] = ny
+        if (nx, ny) != (ox, oy):
+            self._layer_drag_changed = True
+        self.layer_moved.emit(self._layer_drag_idx, nx, ny)
+        self.update()
+
+    def _show_layer_context_menu(self, idx: int, global_pos: QPoint) -> None:
+        menu = QMenu(self)
+        act_top = menu.addAction("置于最上层")
+        act_up = menu.addAction("上移一层")
+        act_down = menu.addAction("下移一层")
+        act_bottom = menu.addAction("置于最下层")
+        menu.addSeparator()
+        act_delete = menu.addAction("删除图层")
+
+        count = len(self._layers)
+        act_top.setEnabled(idx < count - 1)
+        act_up.setEnabled(idx < count - 1)
+        act_down.setEnabled(idx > 0)
+        act_bottom.setEnabled(idx > 0)
+
+        chosen = menu.exec(global_pos)
+        if chosen is act_top:
+            self.layer_reorder_requested.emit(idx, "top")
+        elif chosen is act_up:
+            self.layer_reorder_requested.emit(idx, "up")
+        elif chosen is act_down:
+            self.layer_reorder_requested.emit(idx, "down")
+        elif chosen is act_bottom:
+            self.layer_reorder_requested.emit(idx, "bottom")
+        elif chosen is act_delete:
+            self.layer_delete_requested.emit(idx)
 
     def _do_move(self, pos: QPoint) -> None:
         if not self._crop_drag_origin or not self._crop_rect_origin:
@@ -461,7 +616,22 @@ class Canvas(QWidget):
         img_rect = QRect(self._pan_offset.x(), self._pan_offset.y(), img_w, img_h)
 
         self._draw_checkerboard(painter, img_rect)
-        painter.drawPixmap(img_rect, self._pixmap)
+        for i, layer in enumerate(self._layers):
+            if not layer["visible"]:
+                continue
+            cx = int(self._pan_offset.x() + layer["x"] * self.zoom_factor)
+            cy = int(self._pan_offset.y() + layer["y"] * self.zoom_factor)
+            cw = int(layer["w"] * self.zoom_factor)
+            ch = int(layer["h"] * self.zoom_factor)
+            painter.drawPixmap(QRect(cx, cy, cw, ch), layer["pixmap"])
+            if i == self._active_layer_idx:
+                if self._tool == CanvasTool.LAYER_MOVE:
+                    pen = QPen(QColor(52, 152, 219), 2)
+                else:
+                    pen = QPen(QColor(52, 152, 219), 1, Qt.PenStyle.DashLine)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRect(cx, cy, cw, ch))
 
         # 绘制选区（优先显示实时拖拽）
         if self._crop_drag_mode == "draw" and self._drag_start and self._drag_end:

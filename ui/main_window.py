@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
 
 from ui.canvas import Canvas
 from ui.crop_panel import CropPanel
+from ui.layer_panel import LayerPanel
 from ui.toolbar import ToolBar
 
 
@@ -14,6 +15,8 @@ class MainWindow(QMainWindow):
     """应用主窗口。"""
 
     open_triggered = Signal()
+    add_layer_triggered = Signal()
+    clear_layers_triggered = Signal()
     export_triggered = Signal()
     undo_triggered = Signal()
     redo_triggered = Signal()
@@ -46,6 +49,10 @@ class MainWindow(QMainWindow):
     def crop_panel(self) -> CropPanel:
         return self._crop_panel
 
+    @property
+    def layer_panel(self) -> LayerPanel:
+        return self._layer_panel
+
     # ------------------------------------------------------------------
     # 初始化
     # ------------------------------------------------------------------
@@ -62,19 +69,22 @@ class MainWindow(QMainWindow):
         self._toolbar = ToolBar()
         outer.addWidget(self._toolbar)
 
-        # 右侧竖向：画布 + 裁剪面板
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(0)
+        # 中间竖向：画布 + 裁剪面板
+        center = QWidget()
+        center_layout = QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
 
         self._canvas = Canvas()
-        right_layout.addWidget(self._canvas, 1)
+        center_layout.addWidget(self._canvas, 1)
 
         self._crop_panel = CropPanel()
-        right_layout.addWidget(self._crop_panel)
+        center_layout.addWidget(self._crop_panel)
 
-        outer.addWidget(right, 1)
+        outer.addWidget(center, 1)
+
+        self._layer_panel = LayerPanel()
+        outer.addWidget(self._layer_panel)
 
         self.setStyleSheet("""
             QMainWindow { background: #1a1a1a; }
@@ -110,6 +120,21 @@ class MainWindow(QMainWindow):
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.open_triggered)
         file_menu.addAction(open_action)
+
+        add_layer_action = QAction("添加图片为图层...", self)
+        add_layer_action.setShortcut(
+            QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.SHIFT | Qt.Key.Key_O)
+        )
+        add_layer_action.triggered.connect(self.add_layer_triggered)
+        file_menu.addAction(add_layer_action)
+
+        clear_layers_action = QAction("清空所有图层", self)
+        clear_layers_action.setShortcut(
+            QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.SHIFT | Qt.Key.Key_Delete)
+        )
+        clear_layers_action.setStatusTip("移除当前画布中的全部图层")
+        clear_layers_action.triggered.connect(self.clear_layers_triggered)
+        file_menu.addAction(clear_layers_action)
 
         self.export_action = QAction("导出...", self)
         self.export_action.setShortcut(QKeySequence.StandardKey.Save)
@@ -171,6 +196,19 @@ class MainWindow(QMainWindow):
 
         # 视图菜单
         view_menu = menubar.addMenu("视图")
+
+        self.toggle_layer_panel_action = QAction("显示图层栏", self)
+        self.toggle_layer_panel_action.setCheckable(True)
+        self.toggle_layer_panel_action.setChecked(True)
+        self.toggle_layer_panel_action.setShortcut(
+            QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.ALT | Qt.Key.Key_L)
+        )
+        self.toggle_layer_panel_action.triggered.connect(
+            self._layer_panel.setVisible
+        )
+        view_menu.addAction(self.toggle_layer_panel_action)
+
+        view_menu.addSeparator()
 
         zoom_in_action = QAction("放大视图（不修改图片）", self)
         zoom_in_action.setShortcut(QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Equal))
@@ -242,8 +280,11 @@ class MainWindow(QMainWindow):
             msg.setEscapeButton(QMessageBox.StandardButton.Cancel)
             reply = msg.exec()
             if reply == QMessageBox.StandardButton.Save:
-                self.controller.export_image()
-                event.accept()
+                saved = self.controller.export_image()
+                if saved:
+                    event.accept()
+                else:
+                    event.ignore()
             elif reply == QMessageBox.StandardButton.Discard:
                 event.accept()
             else:
