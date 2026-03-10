@@ -1,7 +1,7 @@
 # EasyPicture 技术设计文档
 
-**版本**：v1.1  
-**日期**：2026-03-09  
+**版本**：v1.2  
+**日期**：2026-03-10  
 **技术栈**：Python 3.11+ / OpenCV 4.x（contrib） / PyQt6 / NumPy / onnxruntime  
 **包管理**：uv（替代 pip + venv）
 
@@ -14,7 +14,7 @@
 ```
 ┌──────────────────────────────────────────────────────┐
 │                   UI 层（PyQt6）                       │
-│  MainWindow / Canvas / ToolBar / StatusBar / Dialogs  │
+│  MainWindow / Canvas / ToolBar / LayerPanel / SpritePanel / Dialogs │
 ├──────────────────────────────────────────────────────┤
 │               控制层（Controller）                     │
 │       AppController — 协调 UI 事件与核心处理           │
@@ -23,7 +23,7 @@
 │  ImageProcessor / GrabCutProcessor / HistoryManager   │
 ├──────────────────────────────────────────────────────┤
 │               数据模型层（Model）                      │
-│          ImageModel — 持有图像 numpy 数组             │
+│      ImageModel — 持有图层列表与合成缓存（BGRA）       │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -36,11 +36,11 @@
       ↓
   AppController（信号路由）
       ↓
-  Core 处理（OpenCV 计算）
+  Core 处理（OpenCV 计算 / 雪碧图生成）
       ↓
-  ImageModel 更新（numpy array 替换）
+  ImageModel 更新（图层状态/快照）
       ↓
-  Canvas 刷新（QPixmap 重绘）
+  Canvas 刷新（图层重绘 / 雪碧图模式显示）
       ↓
   用户看到结果
 ```
@@ -70,7 +70,9 @@ easyPicture/
 │   ├── main_window.py          # MainWindow：窗口框架、菜单栏、状态栏
 │   ├── canvas.py               # Canvas：图片显示、鼠标事件、选区绘制
 │   ├── toolbar.py              # ToolBar：左侧工具面板，工具切换
-│   └── dialogs.py              # 导出对话框、GrabCut 确认对话框
+│   ├── layer_panel.py          # LayerPanel：图层清单（选择/显隐/拖拽排序）
+│   ├── sprite_panel.py         # SpritePanel：雪碧图底部面板（每行帧数/预览/导出）
+│   └── dialogs.py              # 各类对话框（JPEG/缩放/AI/雪碧图预览）
 ├── core/
 │   ├── __init__.py
 │   ├── image_model.py          # ImageModel：持有当前图像状态
@@ -93,16 +95,28 @@ easyPicture/
 负责持有当前编辑图像的所有状态。
 
 ```python
+class ImageLayer:
+    name: str
+    image: np.ndarray      # BGRA
+    x: int
+    y: int
+    visible: bool
+    source_path: str | None
+
 class ImageModel:
-    original_path: str           # 原始文件路径
-    current_image: np.ndarray    # 当前工作图像（BGRA）
-    selection: QRect | None      # 当前矩形选区（画布坐标）
-    is_dirty: bool               # 是否有未保存修改
+    layers: list[ImageLayer]         # 底 -> 顶
+    active_layer_idx: int
+    selection: tuple[int, int, int, int] | None
+    is_dirty: bool
+    _composited_cache: np.ndarray | None
+    _composited_dirty: bool
 ```
 
 **关键设计**：
-- `current_image` 始终是 BGRA 四通道（导入时如无透明通道自动添加 alpha=255）
-- 导出时根据格式决定是否保留 alpha 通道
+- 多图层按 BGRA 保存，最终导出时进行 alpha 合成
+- `image` 属性返回合成结果副本（有缓存，避免重复全量合成）
+- 图层增删改、显隐、重排会打脏缓存
+- 支持完整状态快照（含图层列表）用于撤销/重做
 
 ### 3.2 ImageProcessor（图像处理）
 
@@ -120,6 +134,7 @@ class ImageModel:
 | `resize_to_size(img, target_w, target_h, keep_aspect)` | 重采样到指定尺寸，可选锁比（F-09）  |
 | `read_image(path)`                        | 读取图片，返回 BGRA ndarray，保持原始尺寸           |
 | `write_image(img, path, quality)`         | 写入图片，PNG 无损，JPG 按 quality 参数            |
+| `build_sprite_sheet(frames, per_row)`     | 按帧顺序生成雪碧图（rows×cols 网格）                |
 
 **旋转无损实现**：
 - 90°/180°/270° 旋转使用 `cv2.rotate()`，无插值，像素1:1对应，完全无损
@@ -253,15 +268,13 @@ class RealESRGANWorker(QObject):
 
 ```python
 class HistoryManager:
-    _stack: list[np.ndarray]   # 历史快照栈
-    _cursor: int               # 当前位置指针
-    MAX_STEPS = 20             # 最大撤销步数
-    
-    def push(self, img: np.ndarray)   # 保存快照（深拷贝）
-    def undo(self) -> np.ndarray      # 返回上一步图像
-    def redo(self) -> np.ndarray      # 返回下一步图像
-    def can_undo(self) -> bool
-    def can_redo(self) -> bool
+    _stack: list[dict]         # 完整状态快照（图层/活动层/选区/脏状态）
+    _cursor: int
+    MAX_STEPS = 20
+
+    def push(self, state: dict)
+    def undo(self) -> dict | None
+    def redo(self) -> dict | None
 ```
 
 **内存控制**：
@@ -269,9 +282,11 @@ class HistoryManager:
 - 超过 MAX_STEPS 时，弹出最旧的快照
 - 对于大图（> 10MB），可考虑只保存 10 步
 
-### 3.5 Canvas（画布组件）
+### 3.6 Canvas（画布组件）
 
-继承 `QWidget`，是用户交互的核心组件。
+继承 `QWidget`，是用户交互的核心组件。支持两种显示模式：
+- 普通图层模式：逐层绘制并支持活动图层高亮
+- 雪碧图模式：直接显示拼接后的雪碧图画布
 
 **视图缩放**：
 - 维护 `zoom_factor: float`（默认 1.0）
@@ -297,6 +312,22 @@ IDLE ──(工具选择)──► SELECT_MODE
 **选区绘制**：
 - 使用 `QPainter` 在 `paintEvent` 中绘制虚线矩形（`Qt.PenStyle.DashLine`）
 - 选区外区域叠加半透明蒙层（`QColor(0, 0, 0, 80)`）
+
+---
+
+### 3.7 雪碧图模式（Sprite Mode）
+
+执行链路：
+
+```
+切换工具到 SPRITE
+→ 显示 SpritePanel（每行帧数、预览、导出）
+→ 读取可见图层 frames（底->顶）
+→ ImageProcessor.build_sprite_sheet(frames, per_row)
+→ Canvas.set_sprite_sheet(sheet) 显示排布结果
+→ 预览：SpritePreviewDialog 按 frames 逐帧播放（默认 500ms，可调）
+→ 关闭雪碧图面板：恢复普通图层画布
+```
 
 ---
 

@@ -244,3 +244,43 @@ class ImageProcessor:
         result = img.copy()
         result[:, :, :3] = sharpened
         return result
+
+    # ------------------------------------------------------------------
+    # 雪碧图
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_sprite_sheet(frames: list[np.ndarray], per_row: int) -> tuple[np.ndarray, int, int]:
+        """
+        按帧顺序生成雪碧图。
+
+        Args:
+            frames:   BGRA 帧列表（每层一帧）
+            per_row:  每行放置多少帧
+
+        Returns:
+            (sheet, rows, cols)：
+            - sheet: 生成的 BGRA 雪碧图
+            - rows:  实际行数
+            - cols:  实际列数（即 per_row）
+        """
+        if not frames:
+            raise ValueError("没有可用于生成雪碧图的图层")
+        if per_row <= 0:
+            raise ValueError("每行帧数必须大于 0")
+
+        cols = per_row
+        rows = (len(frames) + cols - 1) // cols
+        cell_w = max(frame.shape[1] for frame in frames)
+        cell_h = max(frame.shape[0] for frame in frames)
+        sheet = np.zeros((rows * cell_h, cols * cell_w, 4), dtype=np.uint8)
+
+        for i, frame in enumerate(frames):
+            r = i // cols
+            c = i % cols
+            y0 = r * cell_h
+            x0 = c * cell_w
+            h, w = frame.shape[:2]
+            sheet[y0:y0 + h, x0:x0 + w] = frame
+
+        return sheet, rows, cols

@@ -67,6 +67,9 @@ class Canvas(QWidget):
         self._image_height: int = 0
         self._layers: list[dict] = []
         self._active_layer_idx: int = -1
+        self._sprite_pixmap: Optional[QPixmap] = None
+        self._sprite_w: int = 0
+        self._sprite_h: int = 0
         self.zoom_factor: float = 1.0
         self._pan_offset: QPoint = QPoint(0, 0)
         self._pan_start: Optional[QPoint] = None
@@ -108,6 +111,10 @@ class Canvas(QWidget):
     def image_height(self) -> int:
         return self._image_height
 
+    @property
+    def tool(self) -> CanvasTool:
+        return self._tool
+
     def set_image(self, img: np.ndarray) -> None:
         self.set_layers(
             [{"name": "图层 1", "image": img, "x": 0, "y": 0, "visible": True}],
@@ -128,6 +135,9 @@ class Canvas(QWidget):
     def set_layers(self, layers: list[dict], canvas_w: int, canvas_h: int,
                    active_idx: int) -> None:
         """设置图层数据并重建渲染缓存。"""
+        self._sprite_pixmap = None
+        self._sprite_w = 0
+        self._sprite_h = 0
         self._image_width = canvas_w
         self._image_height = canvas_h
         self._layers = []
@@ -150,6 +160,22 @@ class Canvas(QWidget):
         else:
             self._pixmap = None
         self.update()
+
+    def set_sprite_sheet(self, img: Optional[np.ndarray]) -> None:
+        """切换为雪碧图显示（img=None 时恢复图层显示）。"""
+        if img is None:
+            self._sprite_pixmap = None
+            self._sprite_w = 0
+            self._sprite_h = 0
+            self.update()
+            return
+        self._sprite_pixmap = ndarray_to_qpixmap(img)
+        self._sprite_w = img.shape[1]
+        self._sprite_h = img.shape[0]
+        # 雪碧图模式下按雪碧图尺寸进行缩放适配
+        self._image_width = self._sprite_w
+        self._image_height = self._sprite_h
+        self.zoom_fit()
 
     def clear_selection(self) -> None:
         self._selection_rect = None
@@ -616,6 +642,10 @@ class Canvas(QWidget):
         img_rect = QRect(self._pan_offset.x(), self._pan_offset.y(), img_w, img_h)
 
         self._draw_checkerboard(painter, img_rect)
+        if self._sprite_pixmap is not None:
+            painter.drawPixmap(img_rect, self._sprite_pixmap)
+            return
+
         for i, layer in enumerate(self._layers):
             if not layer["visible"]:
                 continue

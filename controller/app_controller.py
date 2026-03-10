@@ -10,7 +10,12 @@ from core.history import HistoryManager
 from core.image_model import ImageModel
 from core.image_processor import ImageProcessor
 from core.realesrgan import RealESRGANWorker, is_model_available
-from ui.dialogs import JpegQualityDialog, ResizeDialog, AiClarifyDialog
+from ui.dialogs import (
+    JpegQualityDialog,
+    ResizeDialog,
+    AiClarifyDialog,
+    SpritePreviewDialog,
+)
 from ui.main_window import MainWindow
 from ui.toolbar import CanvasTool
 
@@ -21,6 +26,7 @@ _TOOL_NAMES = {
     CanvasTool.SELECT:  "选框",
     CanvasTool.CROP:    "裁剪",
     CanvasTool.GRABCUT: "抠图",
+    CanvasTool.SPRITE:  "雪碧图",
 }
 
 _OPEN_FILTER = "图片文件 (*.png *.jpg *.jpeg *.bmp *.tiff *.tif *.webp)"
@@ -64,6 +70,10 @@ class AppController:
         # 图像
         w.trim_triggered.connect(self.do_trim_to_content)
         w.resize_triggered.connect(self.do_resize_to_size)
+        w.sprite_preview_triggered.connect(self.preview_sprite_sheet)
+        w.sprite_export_triggered.connect(self.export_sprite_sheet)
+        w.sprite_per_row_changed.connect(self._on_sprite_per_row_changed)
+        w.sprite_panel.closed.connect(self._on_sprite_panel_closed)
 
         # 编辑
         w.undo_triggered.connect(self.undo)
@@ -138,6 +148,7 @@ class AppController:
         self.history.clear()
         self._push_history_snapshot()
         self._refresh_canvas_from_model(zoom_fit=True)
+        self._update_sprite_panel_info()
         self.window.update_image_info(self.model.width, self.model.height)
         self.window.crop_panel.set_image_size(self.model.width, self.model.height)
         self.window.setWindowTitle(f"EasyPicture — {path}")
@@ -161,6 +172,7 @@ class AppController:
         self.model.add_layer(img, Path(path).name, source_path=path)
         self._push_history_snapshot()
         self._refresh_canvas_from_model(zoom_fit=(len(self.model.layers) == 1))
+        self._update_sprite_panel_info()
         self.window.update_image_info(self.model.width, self.model.height)
         self.window.crop_panel.set_image_size(self.model.width, self.model.height)
         self.window.show_message(f"已添加图层：{Path(path).name}")
@@ -183,6 +195,7 @@ class AppController:
             self._push_history_snapshot()
             self.window.canvas.clear_selection()
             self._refresh_canvas_from_model()
+            self._update_sprite_panel_info()
             self.window.update_image_info(self.model.width, self.model.height)
             self.window.crop_panel.set_image_size(self.model.width, self.model.height)
             self.window.show_message("已清空所有图层")
@@ -249,6 +262,7 @@ class AppController:
         self.model.update_image(new_img)
         self._push_history_snapshot()
         self._refresh_canvas_from_model(zoom_fit=zoom_fit)
+        self._update_sprite_panel_info()
         self.window.update_image_info(self.model.width, self.model.height)
         # 图像尺寸变化时同步 crop_panel 的坐标上限
         self.window.crop_panel.set_image_size(self.model.width, self.model.height)
@@ -363,6 +377,7 @@ class AppController:
         self.model.restore_from_snapshot(prev)
         self.window.canvas.clear_selection()
         self._refresh_canvas_from_model()
+        self._update_sprite_panel_info()
         self.window.update_image_info(self.model.width, self.model.height)
         self.window.crop_panel.set_image_size(self.model.width, self.model.height)
         self._update_undo_redo_state()
@@ -374,6 +389,7 @@ class AppController:
         self.model.restore_from_snapshot(nxt)
         self.window.canvas.clear_selection()
         self._refresh_canvas_from_model()
+        self._update_sprite_panel_info()
         self.window.update_image_info(self.model.width, self.model.height)
         self.window.crop_panel.set_image_size(self.model.width, self.model.height)
         self._update_undo_redo_state()
@@ -600,12 +616,16 @@ class AppController:
         if self.model.set_layer_visible(idx, visible):
             self._push_history_snapshot()
             self._refresh_canvas_from_model()
+            self._update_sprite_panel_info()
+            self._update_sprite_canvas_view()
             self._update_undo_redo_state()
 
     def _on_layer_order_changed(self, order: list[int]) -> None:
         if self.model.reorder_layers_by_indices(order):
             self._push_history_snapshot()
             self._refresh_canvas_from_model()
+            self._update_sprite_panel_info()
+            self._update_sprite_canvas_view()
             self._update_undo_redo_state()
 
     def _on_layer_moved(self, idx: int, x: int, y: int) -> None:
@@ -621,6 +641,8 @@ class AppController:
         if new_idx != idx:
             self._push_history_snapshot()
         self._refresh_canvas_from_model()
+        self._update_sprite_panel_info()
+        self._update_sprite_canvas_view()
         self._update_undo_redo_state()
 
     def _on_layer_delete_requested(self, idx: int) -> None:
@@ -630,6 +652,8 @@ class AppController:
             self.window.crop_panel.set_image_size(self.model.width, self.model.height)
             self.window.update_image_info(self.model.width, self.model.height)
             self._refresh_canvas_from_model()
+            self._update_sprite_panel_info()
+            self._update_sprite_canvas_view()
             self._update_undo_redo_state()
 
     def _on_esrgan_failed(self, err: str) -> None:
@@ -653,6 +677,7 @@ class AppController:
         self.window.update_tool(_TOOL_NAMES.get(tool, "-"))
 
         cp = self.window.crop_panel
+        sp = self.window.sprite_panel
         if tool == CanvasTool.CROP:
             # 显示裁剪面板并初始化图像尺寸限制
             if self.model.image is not None:
@@ -662,8 +687,27 @@ class AppController:
             if sel:
                 cp.set_selection(*sel)
             cp.show()
+            sp.hide()
+            self.window.canvas.set_sprite_sheet(None)
+            self._refresh_canvas_from_model()
+        elif tool == CanvasTool.SPRITE:
+            cp.hide()
+            self._update_sprite_panel_info()
+            sp.show()
+            self._update_sprite_canvas_view()
         else:
             cp.hide()
+            sp.hide()
+            self.window.canvas.set_sprite_sheet(None)
+            self._refresh_canvas_from_model()
+
+    def _on_sprite_panel_closed(self) -> None:
+        self.window.toolbar.set_tool(CanvasTool.NONE)
+        self.window.canvas.set_tool(CanvasTool.NONE)
+        self.window.sprite_panel.hide()
+        self.window.canvas.set_sprite_sheet(None)
+        self._refresh_canvas_from_model()
+        self.window.update_tool("-")
 
     def _refresh_canvas_from_model(self, zoom_fit: bool = False) -> None:
         layers = [{
@@ -686,3 +730,83 @@ class AppController:
 
     def _push_history_snapshot(self) -> None:
         self.history.push(self.model.get_state_snapshot())
+
+    def _get_sprite_frames(self) -> list[np.ndarray]:
+        return [layer.image for layer in self.model.layers if layer.visible]
+
+    def _on_sprite_per_row_changed(self, _value: int) -> None:
+        self._update_sprite_panel_info()
+        self._update_sprite_canvas_view()
+
+    def _update_sprite_panel_info(self) -> None:
+        frames = self._get_sprite_frames()
+        if not frames:
+            self.window.sprite_panel.set_info("无可用图层")
+            self.window.canvas.set_sprite_sheet(None)
+            return
+        per_row = max(1, self.window.sprite_panel.per_row)
+        _, rows, cols = ImageProcessor.build_sprite_sheet(frames, per_row)
+        self.window.sprite_panel.set_info(
+            f"{len(frames)} 帧  ·  {cols}×{rows} 网格"
+        )
+
+    def preview_sprite_sheet(self) -> None:
+        frames = self._get_sprite_frames()
+        if not frames:
+            QMessageBox.information(self.window, "雪碧图", "没有可预览的图层")
+            return
+        dlg = SpritePreviewDialog(frames, self.window)
+        dlg.exec()
+
+    def export_sprite_sheet(self) -> None:
+        frames = self._get_sprite_frames()
+        if not frames:
+            QMessageBox.information(self.window, "雪碧图", "没有可导出的图层")
+            return
+
+        per_row = max(1, self.window.sprite_panel.per_row)
+        sheet, rows, cols = ImageProcessor.build_sprite_sheet(frames, per_row)
+
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self.window, "导出雪碧图", "", _SAVE_FILTER
+        )
+        if not path:
+            return
+
+        if not Path(path).suffix:
+            if "PNG" in selected_filter:
+                path += ".png"
+            elif "JPEG" in selected_filter:
+                path += ".jpg"
+            elif "TIFF" in selected_filter:
+                path += ".tiff"
+            else:
+                path += ".bmp"
+
+        ext = Path(path).suffix.lower()
+        quality = 95
+        if ext in (".jpg", ".jpeg"):
+            dlg = JpegQualityDialog(self.window, 95)
+            if dlg.exec() != JpegQualityDialog.DialogCode.Accepted:
+                return
+            quality = dlg.quality
+
+        try:
+            ImageProcessor.write_image(sheet, path, quality)
+            self.window.show_message(
+                f"已导出雪碧图：{cols}×{rows} 网格，{len(frames)} 帧"
+            )
+        except Exception as exc:
+            QMessageBox.critical(self.window, "导出雪碧图失败", str(exc))
+
+    def _update_sprite_canvas_view(self) -> None:
+        if self.window.canvas is None:
+            return
+        if self.window.sprite_panel.isVisible() and self.window.canvas.tool == CanvasTool.SPRITE:
+            frames = self._get_sprite_frames()
+            if not frames:
+                self.window.canvas.set_sprite_sheet(None)
+                return
+            per_row = max(1, self.window.sprite_panel.per_row)
+            sheet, _, _ = ImageProcessor.build_sprite_sheet(frames, per_row)
+            self.window.canvas.set_sprite_sheet(sheet)

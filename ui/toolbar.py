@@ -12,6 +12,7 @@ class CanvasTool(IntEnum):
     GRABCUT = 3
     PAN = 4
     LAYER_MOVE = 5
+    SPRITE = 6
 
 
 class ToolBar(QWidget):
@@ -92,6 +93,11 @@ class ToolBar(QWidget):
         btn_layer = self._make_tool_btn("◫\n图层", CanvasTool.LAYER_MOVE)
         btn_layer.setToolTip("图层工具：点击选中图层并拖拽移动")
         layout.addWidget(btn_layer)
+
+        # 雪碧图模式
+        btn_sprite = self._make_tool_btn("🎞\n雪碧图", CanvasTool.SPRITE)
+        btn_sprite.setToolTip("雪碧图：设置每行帧数并预览播放")
+        layout.addWidget(btn_sprite)
 
         # 裁剪
         btn_crop = self._make_tool_btn("✂\n裁剪", CanvasTool.CROP)

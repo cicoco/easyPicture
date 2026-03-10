@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
 from ui.canvas import Canvas
 from ui.crop_panel import CropPanel
 from ui.layer_panel import LayerPanel
+from ui.sprite_panel import SpritePanel
 from ui.toolbar import ToolBar
 
 
@@ -22,6 +23,9 @@ class MainWindow(QMainWindow):
     redo_triggered = Signal()
     trim_triggered = Signal()
     resize_triggered = Signal()
+    sprite_preview_triggered = Signal()
+    sprite_export_triggered = Signal()
+    sprite_per_row_changed = Signal(int)
 
     def __init__(self) -> None:
         super().__init__()
@@ -53,6 +57,10 @@ class MainWindow(QMainWindow):
     def layer_panel(self) -> LayerPanel:
         return self._layer_panel
 
+    @property
+    def sprite_panel(self) -> SpritePanel:
+        return self._sprite_panel
+
     # ------------------------------------------------------------------
     # 初始化
     # ------------------------------------------------------------------
@@ -81,10 +89,17 @@ class MainWindow(QMainWindow):
         self._crop_panel = CropPanel()
         center_layout.addWidget(self._crop_panel)
 
+        self._sprite_panel = SpritePanel()
+        center_layout.addWidget(self._sprite_panel)
+
         outer.addWidget(center, 1)
 
         self._layer_panel = LayerPanel()
         outer.addWidget(self._layer_panel)
+
+        self._sprite_panel.preview_clicked.connect(self.sprite_preview_triggered)
+        self._sprite_panel.export_clicked.connect(self.sprite_export_triggered)
+        self._sprite_panel.per_row_changed.connect(self.sprite_per_row_changed)
 
         self.setStyleSheet("""
             QMainWindow { background: #1a1a1a; }

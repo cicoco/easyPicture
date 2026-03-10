@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import numpy as np
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                               QLabel, QSlider, QPushButton, QDialogButtonBox,
                               QSpinBox, QDoubleSpinBox, QCheckBox, QFrame,
@@ -310,3 +312,90 @@ class AiClarifyDialog(QDialog):
             "scale": 2 if self._radio_2x.isChecked() else 4,
             "denoise": self._denoise_slider.value() / 100.0,
         }
+
+
+def _ndarray_to_qpixmap(img: np.ndarray) -> QPixmap:
+    h, w = img.shape[:2]
+    rgba = np.ascontiguousarray(img[:, :, [2, 1, 0, 3]])
+    qimg = QImage(rgba.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888)
+    return QPixmap.fromImage(qimg)
+
+
+class SpritePreviewDialog(QDialog):
+    """雪碧图预览对话框：播放逐帧动画。"""
+
+    def __init__(self, frames: list[np.ndarray], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("雪碧图预览")
+        self.resize(640, 420)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        title = QLabel("雪碧图播放预览")
+        title.setStyleSheet("font-size: 13px; font-weight: bold;")
+        layout.addWidget(title)
+
+        self._anim_label = QLabel()
+        self._anim_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._anim_label.setMinimumHeight(280)
+        self._anim_label.setStyleSheet("background:#1f1f1f; border:1px solid #3d3d3d;")
+        layout.addWidget(self._anim_label)
+
+        hint = QLabel("播放顺序：按图层顺序（底层 -> 顶层）")
+        hint.setStyleSheet("color:#999; font-size:11px;")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(hint)
+
+        ctrl_row = QHBoxLayout()
+        ctrl_row.addStretch()
+        ctrl_row.addWidget(QLabel("播放间隔："))
+        self._interval_spin = QSpinBox()
+        self._interval_spin.setRange(16, 2000)
+        self._interval_spin.setValue(500)
+        self._interval_spin.setSuffix(" ms")
+        self._interval_spin.valueChanged.connect(self._on_interval_changed)
+        ctrl_row.addWidget(self._interval_spin)
+        ctrl_row.addStretch()
+        layout.addLayout(ctrl_row)
+
+        self._frames = frames
+        self._frame_idx = 0
+
+        self._timer_id = self.startTimer(self._interval_spin.value())
+        self._update_anim_frame()
+
+    def timerEvent(self, event) -> None:
+        if not self._frames:
+            return
+        self._frame_idx = (self._frame_idx + 1) % len(self._frames)
+        self._update_anim_frame()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_anim_frame()
+
+    def closeEvent(self, event) -> None:
+        if self._timer_id is not None:
+            self.killTimer(self._timer_id)
+            self._timer_id = None
+        super().closeEvent(event)
+
+    def _on_interval_changed(self, value: int) -> None:
+        if self._timer_id is not None:
+            self.killTimer(self._timer_id)
+        self._timer_id = self.startTimer(max(16, value))
+
+    def _update_anim_frame(self) -> None:
+        if not self._frames:
+            self._anim_label.setText("无可播放帧")
+            return
+        frame = self._frames[self._frame_idx]
+        pix = _ndarray_to_qpixmap(frame)
+        self._anim_label.setPixmap(
+            pix.scaled(
+                self._anim_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
