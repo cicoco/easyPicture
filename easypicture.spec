@@ -9,12 +9,28 @@
 # 输出：dist/EasyPicture.app
 
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 ROOT = Path(SPECPATH)
 
 # ─── 打包进 app 的数据文件 ────────────────────────────────────────────────────
 
 datas = []
+binaries = []
+hiddenimports = []
+
+# onnxruntime：完整收集包目录、动态库及子模块
+_ort_datas, _ort_bins, _ort_hidden = collect_all("onnxruntime")
+datas     += _ort_datas
+binaries  += _ort_bins
+hiddenimports += _ort_hidden
+binaries += collect_dynamic_libs("onnxruntime")
+
+# cv2（opencv）
+_cv2_datas, _cv2_bins, _cv2_hidden = collect_all("cv2")
+datas     += _cv2_datas
+binaries  += _cv2_bins
+hiddenimports += _cv2_hidden
 
 # 将 models/ 目录下所有 .onnx 文件打包进去（如有）
 for onnx in (ROOT / "models").glob("*.onnx"):
@@ -25,14 +41,12 @@ for onnx in (ROOT / "models").glob("*.onnx"):
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
-    hiddenimports=[
-        # onnxruntime 动态扩展
+    hiddenimports=hiddenimports + [
         "onnxruntime",
         "onnxruntime.capi",
         "onnxruntime.capi._pybind_state",
-        # opencv
         "cv2",
     ],
     hookspath=[],

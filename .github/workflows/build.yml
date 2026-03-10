@@ -26,7 +26,9 @@ jobs:
         run: uv python install cpython-3.12
 
       - name: Install dependencies
-        run: uv sync --extra build
+        run: |
+          uv sync --extra build
+          uv run pip install pyinstaller-hooks-contrib --quiet
 
       - name: Download & convert model
         env:
@@ -75,7 +77,9 @@ jobs:
         run: uv python install cpython-3.12
 
       - name: Install dependencies
-        run: uv sync --extra build
+        run: |
+          uv sync --extra build
+          uv run pip install pyinstaller-hooks-contrib --quiet
 
       - name: Download & convert model
         env:

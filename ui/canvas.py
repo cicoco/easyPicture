@@ -501,19 +501,25 @@ class Canvas(QWidget):
 
     def _paint_selection_rect(self, painter: QPainter, sel_rect: QRect,
                                show_handles: bool = False) -> None:
-        # 半透明蒙层（选区外）
+        # 半透明蒙版（选区外、仅图片区域内）
+        img_w = int(self._image_width * self.zoom_factor)
+        img_h = int(self._image_height * self.zoom_factor)
+        img_rect = QRect(self._pan_offset.x(), self._pan_offset.y(), img_w, img_h)
+        clip = img_rect.intersected(self.rect())   # 图片在可见区域内的部分
+
         painter.save()
-        painter.setBrush(QColor(0, 0, 0, 80))
+        painter.setClipRect(clip)
+        painter.setBrush(QColor(0, 0, 0, 140))
         painter.setPen(Qt.PenStyle.NoPen)
-        full = self.rect()
-        painter.drawRect(QRect(full.left(), full.top(),
-                               full.width(), sel_rect.top() - full.top()))
-        painter.drawRect(QRect(full.left(), sel_rect.bottom(),
-                               full.width(), full.bottom() - sel_rect.bottom()))
-        painter.drawRect(QRect(full.left(), sel_rect.top(),
-                               sel_rect.left() - full.left(), sel_rect.height()))
+        # 4 块：上、下、左、右（绕过选区）
+        painter.drawRect(QRect(clip.left(),    clip.top(),
+                               clip.width(),   sel_rect.top() - clip.top()))
+        painter.drawRect(QRect(clip.left(),    sel_rect.bottom(),
+                               clip.width(),   clip.bottom() - sel_rect.bottom()))
+        painter.drawRect(QRect(clip.left(),    sel_rect.top(),
+                               sel_rect.left() - clip.left(), sel_rect.height()))
         painter.drawRect(QRect(sel_rect.right(), sel_rect.top(),
-                               full.right() - sel_rect.right(), sel_rect.height()))
+                               clip.right() - sel_rect.right(), sel_rect.height()))
         painter.restore()
 
         # 蚂蚁线边框
