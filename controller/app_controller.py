@@ -9,7 +9,12 @@ from core.grabcut import GrabCutWorker
 from core.history import HistoryManager
 from core.image_model import ImageModel
 from core.image_processor import ImageProcessor
-from core.realesrgan import RealESRGANWorker, is_model_available
+from core.realesrgan import (
+    RealESRGANWorker,
+    is_model_available,
+    is_runtime_available,
+    runtime_error_message,
+)
 from ui.dialogs import (
     JpegQualityDialog,
     ResizeDialog,
@@ -543,6 +548,16 @@ class AppController:
         """AI 变清晰：使用 Real-ESRGAN 超分辨率放大（2x/4x），重建细节。"""
         if self.model.image is None:
             QMessageBox.information(self.window, "提示", "请先打开一张图片")
+            return
+
+        if not is_runtime_available():
+            detail = runtime_error_message()
+            QMessageBox.critical(
+                self.window, "运行时不可用",
+                "检测到 onnxruntime 不可用，AI 变清晰已禁用。\n\n"
+                "请在目标系统安装/打包 onnxruntime 及其依赖后重试。"
+                + (f"\n\n详细错误：\n{detail}" if detail else "")
+            )
             return
 
         if not is_model_available():

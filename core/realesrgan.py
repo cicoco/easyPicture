@@ -20,8 +20,14 @@ from typing import Callable
 
 import cv2
 import numpy as np
-import onnxruntime as ort
 from PyQt6.QtCore import QObject, pyqtSignal as Signal
+
+try:
+    import onnxruntime as ort
+    _ORT_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - 依赖环境差异导致
+    ort = None
+    _ORT_IMPORT_ERROR = exc
 
 def _base_dir() -> Path:
     """返回应用根目录，兼容开发环境和 PyInstaller 打包环境。"""
@@ -49,6 +55,14 @@ def is_model_available() -> bool:
     """检查当前模型的 ONNX 文件是否存在。"""
     return _model_path().exists()
 
+def is_runtime_available() -> bool:
+    """检查 onnxruntime 运行时是否可用。"""
+    return ort is not None
+
+def runtime_error_message() -> str:
+    """返回 onnxruntime 不可用时的错误文本。"""
+    return str(_ORT_IMPORT_ERROR) if _ORT_IMPORT_ERROR else ""
+
 
 # ─── ONNX 会话（懒加载、单例）────────────────────────────────────────────────
 
@@ -57,6 +71,11 @@ _session: ort.InferenceSession | None = None
 
 def _get_session() -> ort.InferenceSession:
     global _session
+    if ort is None:
+        raise RuntimeError(
+            "onnxruntime 运行时不可用。"
+            + (f"\n详细错误：{_ORT_IMPORT_ERROR}" if _ORT_IMPORT_ERROR else "")
+        )
     if _session is None:
         _session = ort.InferenceSession(
             str(_model_path()),
