@@ -1,0 +1,134 @@
+name: Build Releases
+
+# 触发条件：
+#   - 推送 v* 标签（如 git tag v0.1.0 && git push --tags）→ 创建 GitHub Release
+#   - 手动在 Actions 页面点击 "Run workflow"
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  # ─── macOS .app ────────────────────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python (arm64)
+        run: uv python install cpython-3.12
+
+      - name: Install dependencies
+        run: uv sync --extra build
+
+      - name: Download & convert model
+        env:
+          # 可选：在 GitHub Secrets 中存放模型下载链接
+          MODEL_URL: ${{ secrets.MODEL_DOWNLOAD_URL }}
+        run: |
+          mkdir -p models
+          if [ -n "$MODEL_URL" ]; then
+            curl -L "$MODEL_URL" -o models/RealESRGAN_x4plus_anime_6B.pth
+            uv run --with torch --with onnx python tools/convert_to_onnx.py RealESRGAN_x4plus_anime_6B.pth
+          else
+            echo "未配置 MODEL_DOWNLOAD_URL Secret，跳过模型打包（AI 功能不可用）"
+          fi
+
+      - name: Build .app
+        run: uv run pyinstaller easypicture.spec --noconfirm
+
+      - name: Compress .app
+        run: |
+          cd dist
+          zip -r EasyPicture-macOS.zip EasyPicture.app
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasyPicture-macOS
+          path: dist/EasyPicture-macOS.zip
+          retention-days: 7
+
+  # ─── Windows .exe ──────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install cpython-3.12
+
+      - name: Install dependencies
+        run: uv sync --extra build
+
+      - name: Download & convert model
+        env:
+          MODEL_URL: ${{ secrets.MODEL_DOWNLOAD_URL }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path models | Out-Null
+          if ($env:MODEL_URL) {
+            Invoke-WebRequest -Uri $env:MODEL_URL -OutFile models/RealESRGAN_x4plus_anime_6B.pth
+            uv run --with torch --with onnx python tools/convert_to_onnx.py RealESRGAN_x4plus_anime_6B.pth
+          } else {
+            Write-Host "未配置 MODEL_DOWNLOAD_URL Secret，跳过模型打包"
+          }
+
+      - name: Build .exe
+        run: uv run pyinstaller easypicture_win.spec --noconfirm
+
+      - name: Compress output
+        shell: pwsh
+        run: |
+          cd dist
+          Compress-Archive -Path EasyPicture -DestinationPath EasyPicture-Windows.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasyPicture-Windows
+          path: dist/EasyPicture-Windows.zip
+          retention-days: 7
+
+  # ─── 创建 GitHub Release（仅 tag 推送时）─────────────────────────────────
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: EasyPicture-macOS
+          path: artifacts/
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: EasyPicture-Windows
+          path: artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/EasyPicture-macOS.zip
+            artifacts/EasyPicture-Windows.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}

@@ -14,6 +14,7 @@ Real-ESRGAN 超分辨率放大模块（基于 onnxruntime 推理）。
 from __future__ import annotations
 
 import math
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -22,7 +23,13 @@ import numpy as np
 import onnxruntime as ort
 from PyQt6.QtCore import QObject, pyqtSignal as Signal
 
-_MODELS_DIR = Path(__file__).parent.parent / "models"
+def _base_dir() -> Path:
+    """返回应用根目录，兼容开发环境和 PyInstaller 打包环境。"""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).parent.parent
+
+_MODELS_DIR = _base_dir() / "models"
 _DEFAULT_MODEL_STEM = "RealESRGAN_x4plus_anime_6B"
 _current_model_stem: str = _DEFAULT_MODEL_STEM
 
