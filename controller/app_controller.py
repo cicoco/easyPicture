@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 from pathlib import Path
 from PyQt6.QtCore import Qt, QThread
+from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
 
 from core.grabcut import GrabCutWorker
@@ -552,12 +554,28 @@ class AppController:
 
         if not is_runtime_available():
             detail = runtime_error_message()
-            QMessageBox.critical(
-                self.window, "运行时不可用",
+            msg = QMessageBox(self.window)
+            msg.setIcon(QMessageBox.Icon.Critical)
+            msg.setWindowTitle("运行时不可用")
+            msg.setText(
                 "检测到 onnxruntime 不可用，AI 变清晰已禁用。\n\n"
-                "请在目标系统安装/打包 onnxruntime 及其依赖后重试。"
-                + (f"\n\n详细错误：\n{detail}" if detail else "")
+                "请安装 Microsoft Visual C++ 2015-2022 x64 Redistributable 后重试。"
             )
+            msg.setInformativeText(
+                "推荐步骤：\n"
+                "1) 点击“打开下载页”\n"
+                "2) 下载并安装 VC_redist.x64.exe\n"
+                "3) 重启后再试 AI 变清晰"
+            )
+            if detail:
+                msg.setDetailedText(detail)
+            open_btn = msg.addButton("打开下载页", QMessageBox.ButtonRole.ActionRole)
+            msg.addButton(QMessageBox.StandardButton.Close)
+            msg.exec()
+            if msg.clickedButton() == open_btn:
+                QDesktopServices.openUrl(
+                    QUrl("https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist")
+                )
             return
 
         if not is_model_available():
