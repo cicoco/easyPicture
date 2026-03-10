@@ -91,8 +91,10 @@ app = BUNDLE(
     info_plist={
         "CFBundleDisplayName": "EasyPicture",
         "CFBundleName": "EasyPicture",
+        "CFBundleExecutable": "EasyPicture",
         "CFBundleShortVersionString": "0.1.0",
         "CFBundleVersion": "0.1.0",
+        "LSApplicationCategoryType": "public.app-category.graphics-design",
         "NSPrincipalClass": "NSApplication",
         "NSHighResolutionCapable": True,
         "NSAppleScriptEnabled": False,
