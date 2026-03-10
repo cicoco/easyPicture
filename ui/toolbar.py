@@ -78,11 +78,7 @@ class ToolBar(QWidget):
         btn_pan.setToolTip("平移工具：拖拽移动画面（也可按住空格键临时切换）")
         layout.addWidget(btn_pan)
 
-        # 分隔线
-        line0 = QFrame()
-        line0.setFrameShape(QFrame.Shape.HLine)
-        line0.setStyleSheet("color: #444;")
-        layout.addWidget(line0)
+        layout.addWidget(self._make_divider())
 
         select_label2 = QLabel("选择")
         layout.addWidget(select_label2)
@@ -125,11 +121,7 @@ class ToolBar(QWidget):
         self._btn_run_grabcut.clicked.connect(self.grabcut_clicked)
         layout.addWidget(self._btn_run_grabcut)
 
-        # 分隔线
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("color: #444;")
-        layout.addWidget(line)
+        layout.addWidget(self._make_divider())
 
         action_label = QLabel("操作")
         layout.addWidget(action_label)
@@ -141,11 +133,7 @@ class ToolBar(QWidget):
         btn_delete.clicked.connect(self.delete_clicked)
         layout.addWidget(btn_delete)
 
-        # 分隔线
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.Shape.HLine)
-        line2.setStyleSheet("color: #444;")
-        layout.addWidget(line2)
+        layout.addWidget(self._make_divider())
 
         rotate_label = QLabel("旋转")
         layout.addWidget(rotate_label)
@@ -164,11 +152,7 @@ class ToolBar(QWidget):
         btn_ccw.clicked.connect(self.rotate_ccw_clicked)
         layout.addWidget(btn_ccw)
 
-        # 分隔线
-        line3 = QFrame()
-        line3.setFrameShape(QFrame.Shape.HLine)
-        line3.setStyleSheet("color: #444;")
-        layout.addWidget(line3)
+        layout.addWidget(self._make_divider())
 
         image_label = QLabel("图像")
         layout.addWidget(image_label)
@@ -201,7 +185,8 @@ class ToolBar(QWidget):
             "AI 变清晰（Real-ESRGAN）\n"
             "使用 AI 超分辨率真正重建细节\n"
             "选择 2x 或 4x 放大，放大后可裁剪\n"
-            "需要 models/realesr-general-x4v3.pth"
+            "需要 models/RealESRGAN_x4plus_anime_6B.onnx\n"
+            "（详见 models/README.md）"
         )
         btn_clarify.setStyleSheet("""
             QPushButton {
@@ -223,6 +208,13 @@ class ToolBar(QWidget):
         layout.addWidget(btn_clarify)
 
         layout.addStretch()
+
+    def _make_divider(self) -> QFrame:
+        """创建水平分隔线。"""
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("color: #444;")
+        return line
 
     def _make_tool_btn(self, label: str, tool: CanvasTool) -> QPushButton:
         btn = QPushButton(label)

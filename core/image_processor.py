@@ -1,7 +1,5 @@
 from __future__ import annotations
-import math
 from pathlib import Path
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -119,40 +117,6 @@ class ImageProcessor:
         return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
     @staticmethod
-    def rotate_180(img: np.ndarray) -> np.ndarray:
-        """旋转 180°，无插值，完全无损。"""
-        return cv2.rotate(img, cv2.ROTATE_180)
-
-    @staticmethod
-    def rotate_arbitrary(img: np.ndarray, angle: float,
-                         expand: bool = True) -> np.ndarray:
-        """
-        任意角度旋转（正值逆时针，负值顺时针）。
-        expand=True 时扩展画布保留完整内容，使用 LANCZOS4 高质量插值。
-        """
-        h, w = img.shape[:2]
-        cx, cy = w / 2.0, h / 2.0
-        M = cv2.getRotationMatrix2D((cx, cy), angle, 1.0)
-
-        if expand:
-            cos_a = abs(math.cos(math.radians(angle)))
-            sin_a = abs(math.sin(math.radians(angle)))
-            new_w = int(h * sin_a + w * cos_a)
-            new_h = int(h * cos_a + w * sin_a)
-            M[0, 2] += (new_w / 2.0) - cx
-            M[1, 2] += (new_h / 2.0) - cy
-        else:
-            new_w, new_h = w, h
-
-        result = cv2.warpAffine(
-            img, M, (new_w, new_h),
-            flags=cv2.INTER_LANCZOS4,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0, 0)
-        )
-        return result
-
-    @staticmethod
     def delete_selection(img: np.ndarray,
                          x1: int, y1: int, x2: int, y2: int) -> np.ndarray:
         """
@@ -257,27 +221,6 @@ class ImageProcessor:
             resized = ImageProcessor._unsharp_mask(resized)
 
         return resized
-
-    @staticmethod
-    def enhance_detail(img: np.ndarray,
-                       sigma_s: float = 10.0,
-                       sigma_r: float = 0.15) -> np.ndarray:
-        """
-        变清晰：使用 cv2.detailEnhance 边缘保留滤波直接增强细节（不改变尺寸）。
-
-        Args:
-            img:     BGRA uint8 图像
-            sigma_s: 局部邻域大小（0~200），越大增强范围越广；默认 10
-            sigma_r: 色彩容差（0~1），越小边缘保护越强；默认 0.15
-
-        Returns:
-            增强后的 BGRA 图像（与输入尺寸相同）
-        """
-        bgr = img[:, :, :3]
-        enhanced_bgr = cv2.detailEnhance(bgr, sigma_s=sigma_s, sigma_r=sigma_r)
-        result = img.copy()
-        result[:, :, :3] = enhanced_bgr
-        return result
 
     @staticmethod
     def _unsharp_mask(img: np.ndarray,

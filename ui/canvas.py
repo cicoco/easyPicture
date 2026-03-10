@@ -32,10 +32,10 @@ def ndarray_to_qpixmap(img: np.ndarray) -> QPixmap:
     """将 BGRA numpy 数组转换为 QPixmap。"""
     h, w = img.shape[:2]
     if img.shape[2] == 4:
-        rgb = img[:, :, [2, 1, 0, 3]]  # BGRA → RGBA
-        qimg = QImage(rgb.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888)
+        rgba = np.ascontiguousarray(img[:, :, [2, 1, 0, 3]])  # BGRA → RGBA
+        qimg = QImage(rgba.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888)
     else:
-        rgb = img[:, :, ::-1].copy()   # BGR → RGB
+        rgb = np.ascontiguousarray(img[:, :, ::-1])  # BGR → RGB
         qimg = QImage(rgb.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
     return QPixmap.fromImage(qimg)
 
@@ -537,22 +537,12 @@ class Canvas(QWidget):
 
         # 8 个缩放手柄（仅裁剪工具显示）
         if show_handles:
-            ix1, iy1, ix2, iy2 = self._selection_rect
-            cx1, cy1 = self.image_to_canvas(ix1, iy1)
-            cx2, cy2 = self.image_to_canvas(ix2, iy2)
-            cxm = (cx1 + cx2) // 2
-            cym = (cy1 + cy2) // 2
-            hs = HANDLE_SIZE // 2
-            pts = [
-                (cx1, cy1), (cxm, cy1), (cx2, cy1),
-                (cx2, cym),
-                (cx2, cy2), (cxm, cy2), (cx1, cy2),
-                (cx1, cym),
-            ]
-            painter.setPen(QPen(QColor(255, 255, 255), 1))
-            painter.setBrush(QColor(30, 111, 165))
-            for x, y in pts:
-                painter.drawRect(x - hs, y - hs, HANDLE_SIZE, HANDLE_SIZE)
+            handle_rects = self._get_handle_rects()
+            if handle_rects:
+                painter.setPen(QPen(QColor(255, 255, 255), 1))
+                painter.setBrush(QColor(30, 111, 165))
+                for rect in handle_rects:
+                    painter.drawRect(rect)
 
     # ------------------------------------------------------------------
     # 内部工具

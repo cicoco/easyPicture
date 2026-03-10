@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Optional
+
 import numpy as np
 
 
@@ -14,13 +15,11 @@ class HistoryManager:
 
     def push(self, img: np.ndarray) -> None:
         """保存当前图像状态，清空 redo 分支，超出上限时删除最旧条目。"""
-        # 截断 cursor 之后的 redo 历史
         if self._cursor < len(self._stack) - 1:
             self._stack = self._stack[: self._cursor + 1]
 
         self._stack.append(img.copy())
 
-        # 超出上限：删除最旧条目
         if len(self._stack) > self.MAX_STEPS:
             self._stack.pop(0)
 

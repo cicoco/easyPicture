@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -59,19 +60,18 @@ def _get_session() -> ort.InferenceSession:
 
 # ─── 单块推理 ─────────────────────────────────────────────────────────────────
 
-def _infer_tile(session: ort.InferenceSession, tile_rgb: np.ndarray) -> np.ndarray:
+def _infer_tile(session: ort.InferenceSession, inp_name: str,
+                tile_rgb: np.ndarray) -> np.ndarray:
     """
     对单个 RGB uint8 tile 执行 ONNX 推理。
     输入：(H, W, 3) uint8
     输出：(H*4, W*4, 3) uint8
     """
-    inp_name = session.get_inputs()[0].name
-    inp = tile_rgb.astype(np.float32) / 255.0          # [0, 1]
-    inp = inp.transpose(2, 0, 1)[np.newaxis, ...]       # (1, 3, H, W)
-    out = session.run(None, {inp_name: inp})[0]         # (1, 3, H*4, W*4)
-    out = out[0].transpose(1, 2, 0)                     # (H*4, W*4, 3)
-    out = np.clip(out * 255.0, 0, 255).astype(np.uint8)
-    return out
+    inp = np.ascontiguousarray(
+        tile_rgb.astype(np.float32) / 255.0
+    ).transpose(2, 0, 1)[np.newaxis]                    # (1, 3, H, W)
+    out = session.run(None, {inp_name: inp})[0]          # (1, 3, H*4, W*4)
+    return np.clip(out[0].transpose(1, 2, 0) * 255.0, 0, 255).astype(np.uint8)
 
 
 # ─── 分块推理主函数 ───────────────────────────────────────────────────────────
@@ -81,16 +81,17 @@ def _upscale_4x(
     session: ort.InferenceSession,
     tile_size: int,
     tile_pad: int,
-    progress_cb=None,
+    progress_cb: Callable[[int], None] | None = None,
 ) -> np.ndarray:
     """
     对 RGB uint8 图像执行 4x 分块推理，返回 RGB uint8（4x 尺寸）。
-    progress_cb(pct: int) 可选进度回调。
+    progress_cb(pct: int) 可选进度回调，范围 5~90。
     """
     h, w = rgb.shape[:2]
     tiles_x = math.ceil(w / tile_size)
     tiles_y = math.ceil(h / tile_size)
     total = tiles_x * tiles_y
+    inp_name = session.get_inputs()[0].name   # 在循环外缓存，避免每次 tile 重复查询
 
     output = np.zeros((h * 4, w * 4, 3), dtype=np.uint8)
 
@@ -102,8 +103,7 @@ def _upscale_4x(
             x1 = min((tx + 1) * tile_size + tile_pad, w)
             y1 = min((ty + 1) * tile_size + tile_pad, h)
 
-            tile = rgb[y0:y1, x0:x1]
-            out_tile = _infer_tile(session, tile)       # (y1-y0)*4 x (x1-x0)*4
+            out_tile = _infer_tile(session, inp_name, rgb[y0:y1, x0:x1])
 
             # 有效区域（去掉 pad 放大后的边缘）
             crop_x0 = (tx * tile_size - x0) * 4
@@ -117,8 +117,7 @@ def _upscale_4x(
                 out_tile[crop_y0:crop_y0 + valid_h, crop_x0:crop_x0 + valid_w]
 
             if progress_cb:
-                pct = int((ty * tiles_x + tx + 1) / total * 85) + 5
-                progress_cb(pct)
+                progress_cb(int((ty * tiles_x + tx + 1) / total * 85) + 5)
 
     return output
 
@@ -131,6 +130,7 @@ def realesrgan_upscale_bgra(
     denoise_strength: float = 0.5,
     tile_size: int = 256,
     tile_pad: int = 10,
+    progress_cb: Callable[[int], None] | None = None,
 ) -> np.ndarray:
     """
     Real-ESRGAN 超分辨率放大（2x / 4x）。
@@ -141,12 +141,16 @@ def realesrgan_upscale_bgra(
         denoise_strength: 0~1，0=保留纹理；1=强去噪（推理前高斯平滑）
         tile_size:        分块大小，默认 256
         tile_pad:         块间重叠像素，默认 10
+        progress_cb:      可选进度回调 (0~100)，供 UI 进度条使用
 
     Returns:
         BGRA uint8，尺寸为原图的 scale 倍
     """
     if scale not in (2, 4):
         raise ValueError("scale 必须是 2 或 4")
+
+    if progress_cb:
+        progress_cb(3)
 
     h, w = img.shape[:2]
     bgr = img[:, :, :3].copy()
@@ -157,14 +161,21 @@ def realesrgan_upscale_bgra(
 
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     session = _get_session()
-    rgb_out = _upscale_4x(rgb, session, tile_size, tile_pad)
+
+    if progress_cb:
+        progress_cb(8)
+
+    rgb_out = _upscale_4x(rgb, session, tile_size, tile_pad, progress_cb)
+
+    if progress_cb:
+        progress_cb(92)
 
     if scale == 2:
         rgb_out = cv2.resize(rgb_out, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4)
 
     bgr_out = cv2.cvtColor(rgb_out, cv2.COLOR_RGB2BGR)
-
     target_size = (w * scale, h * scale)
+
     if alpha is not None:
         alpha_out = cv2.resize(alpha, target_size, interpolation=cv2.INTER_LANCZOS4)
         result = cv2.cvtColor(bgr_out, cv2.COLOR_BGR2BGRA)
@@ -202,46 +213,15 @@ class RealESRGANWorker(QObject):
 
     def run(self) -> None:
         try:
-            self.progress.emit(3)
-            h, w = self._img.shape[:2]
-            bgr = self._img[:, :, :3].copy()
-            alpha = self._img[:, :, 3].copy() if self._img.shape[2] == 4 else None
-
-            if self._denoise > 0:
-                bgr = cv2.GaussianBlur(bgr, (0, 0), self._denoise * 1.5)
-
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            session = _get_session()
-            self.progress.emit(8)
-
-            def on_tile_progress(pct: int) -> None:
-                self.progress.emit(pct)
-
-            rgb_out = _upscale_4x(
-                rgb, session,
-                self._tile_size, self._tile_pad,
-                progress_cb=on_tile_progress,
+            result = realesrgan_upscale_bgra(
+                self._img,
+                scale=self._scale,
+                denoise_strength=self._denoise,
+                tile_size=self._tile_size,
+                tile_pad=self._tile_pad,
+                progress_cb=self.progress.emit,
             )
-
-            self.progress.emit(92)
-            if self._scale == 2:
-                rgb_out = cv2.resize(
-                    rgb_out, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4
-                )
-
-            bgr_out = cv2.cvtColor(rgb_out, cv2.COLOR_RGB2BGR)
-            target_size = (w * self._scale, h * self._scale)
-
-            if alpha is not None:
-                alpha_out = cv2.resize(alpha, target_size, interpolation=cv2.INTER_LANCZOS4)
-                result = cv2.cvtColor(bgr_out, cv2.COLOR_BGR2BGRA)
-                result[:, :, 3] = alpha_out
-            else:
-                result = cv2.cvtColor(bgr_out, cv2.COLOR_BGR2BGRA)
-                result[:, :, 3] = 255
-
             self.progress.emit(100)
             self.finished.emit(result)
-
         except Exception as exc:
             self.failed.emit(str(exc))

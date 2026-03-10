@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from pathlib import Path
 from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
 
@@ -140,7 +141,6 @@ class AppController:
             return
 
         # 补充扩展名
-        from pathlib import Path
         if not Path(path).suffix:
             if "PNG" in selected_filter:
                 path += ".png"
@@ -367,7 +367,6 @@ class AppController:
         if not path:
             return
 
-        from pathlib import Path
         if not Path(path).suffix:
             path += ".png"
 
@@ -377,7 +376,6 @@ class AppController:
         ext = Path(path).suffix.lower()
         quality = 95
         if ext in (".jpg", ".jpeg"):
-            from ui.dialogs import JpegQualityDialog
             dlg = JpegQualityDialog(self.window, 95)
             if dlg.exec() != JpegQualityDialog.DialogCode.Accepted:
                 return
